@@ -26,6 +26,18 @@ use iced::{Alignment, Element, Length, Task, Theme};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Keeps only games where the tracked player appears as White or Black
+/// (case-insensitive). The games table is shared across every player ever
+/// looked up, so this is what scopes "Stored Games"/Insights to whichever
+/// username is currently selected instead of showing everyone's games mixed
+/// together.
+fn games_for_player(games: Vec<StoredGame>, username: &str) -> Vec<StoredGame> {
+    games
+        .into_iter()
+        .filter(|g| g.white.eq_ignore_ascii_case(username) || g.black.eq_ignore_ascii_case(username))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
@@ -49,6 +61,8 @@ pub enum AppMessage {
 
     // Background task completions
     GamesImported(Result<Vec<StoredGame>, String>),
+    ChessComArchivesListed(Result<Vec<String>, String>),
+    ChessComMonthImported(Result<Vec<StoredGame>, String>),
     EngineBatchAnalysisProgress(i64, usize, usize), // (game_id, current_ply, total_plies)
     EngineGameAnalysisFinished(i64, Result<GameAnalysis, String>),
     AllGamesAnalyzed,
@@ -69,6 +83,13 @@ pub struct App {
     pub analyses: HashMap<i64, GameAnalysis>,
     pub insights: OverallInsights,
 
+    // Chess.com fetch is paginated one month at a time (politeness toward the
+    // API's rate limits, and so games appear incrementally instead of one big
+    // blocking wait for players with years of history).
+    pub pending_archives: Vec<String>,
+    pub chesscom_fetch_total: usize,
+    pub chesscom_fetch_done: usize,
+
     // Sub-screens
     pub import_screen: ImportScreen,
     pub game_review_screen: GameReviewScreen,
@@ -87,7 +108,7 @@ impl App {
 
         let coach = Arc::new(CoachClient::new(None, None));
 
-        let initial_games = db.list_games().unwrap_or_default();
+        let initial_games = games_for_player(db.list_games().unwrap_or_default(), &default_username);
         let mut analyses = HashMap::new();
         for g in &initial_games {
             if let Ok(Some(an)) = db.get_analysis(g.id) {
@@ -113,6 +134,10 @@ impl App {
             selected_game_id: None,
             analyses,
             insights,
+
+            pending_archives: Vec::new(),
+            chesscom_fetch_total: 0,
+            chesscom_fetch_done: 0,
 
             import_screen: ImportScreen::new(),
             game_review_screen: GameReviewScreen::new(),
@@ -140,6 +165,48 @@ impl App {
         self.insights = compute_insights(&self.player_username, &self.games, &analyses_vec);
     }
 
+    /// Dequeues and fetches the next pending Chess.com monthly archive. One
+    /// request at a time (not parallel) so we stay polite to the API's rate
+    /// limits; `ChessComClient::get_with_retry` still backs off on a 429 on
+    /// top of this.
+    fn fetch_next_archive(&mut self) -> Task<AppMessage> {
+        if self.pending_archives.is_empty() {
+            return Task::none();
+        }
+        // pending_archives is newest-first; always take from the front so we
+        // process months in that order.
+        let next_url = self.pending_archives.remove(0);
+
+        self.import_screen.status_message = Some(format!(
+            "Fetching month {}/{} ({})...",
+            self.chesscom_fetch_done + 1,
+            self.chesscom_fetch_total,
+            next_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/"),
+        ));
+
+        let client = self.chesscom.clone();
+        let db = Arc::clone(&self.db);
+        let username = self.player_username.clone();
+
+        Task::perform(
+            async move {
+                // Small pacing delay between months, on top of the client's
+                // own 429 retry/backoff, so a long history doesn't fire off
+                // requests as fast as possible.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let pgns = client.fetch_archive_pgns(&next_url).await.map_err(|e| e.to_string())?;
+                for pgn in &pgns {
+                    for g in parse_pgn_games(pgn) {
+                        let _ = db.insert_parsed_game(&g);
+                    }
+                }
+                let games = db.list_games().map_err(|e| e.to_string())?;
+                Ok(games_for_player(games, &username))
+            },
+            AppMessage::ChessComMonthImported,
+        )
+    }
+
     pub fn update(&mut self, message: AppMessage) -> Task<AppMessage> {
         match message {
             AppMessage::ChangeTab(tab) => {
@@ -165,24 +232,67 @@ impl App {
             }
             AppMessage::Import(ImportMessage::FetchChessCom) => {
                 self.import_screen.is_loading = true;
+                self.import_screen.current_page = 0;
                 let username = self.import_screen.username_input.trim().to_string();
                 self.player_username = username.clone();
+                self.import_screen.status_message = Some(format!("Looking up {}'s archive list...", username));
                 let client = self.chesscom.clone();
-                let db = Arc::clone(&self.db);
 
                 Task::perform(
-                    async move {
-                        let pgn_text = client.fetch_all_games(&username).await.map_err(|e| e.to_string())?;
-                        let parsed = parse_pgn_games(&pgn_text);
-                        for g in &parsed {
-                            let _ = db.insert_parsed_game(g);
-                        }
-                        db.list_games().map_err(|e| e.to_string())
-                    },
-                    AppMessage::GamesImported,
+                    async move { client.fetch_user_archives(&username).await.map_err(|e| e.to_string()) },
+                    AppMessage::ChessComArchivesListed,
                 )
             }
+            AppMessage::ChessComArchivesListed(Ok(mut archives)) => {
+                // Chess.com returns oldest-first; fetch newest-first so recent
+                // games show up first instead of waiting on years of history.
+                archives.reverse();
+                self.chesscom_fetch_total = archives.len();
+                self.chesscom_fetch_done = 0;
+                self.pending_archives = archives;
+
+                if self.pending_archives.is_empty() {
+                    self.import_screen.is_loading = false;
+                    self.import_screen.status_message =
+                        Some(format!("No games found for {}.", self.player_username));
+                    Task::none()
+                } else {
+                    self.fetch_next_archive()
+                }
+            }
+            AppMessage::ChessComArchivesListed(Err(e)) => {
+                self.import_screen.is_loading = false;
+                self.import_screen.status_message = Some(format!("Failed to fetch archives: {}", e));
+                Task::none()
+            }
+            AppMessage::ChessComMonthImported(result) => {
+                self.chesscom_fetch_done += 1;
+                match result {
+                    Ok(games) => {
+                        self.games = games;
+                        self.recompute_insights();
+                    }
+                    Err(e) => {
+                        self.import_screen.status_message = Some(format!(
+                            "Month {}/{} failed ({}), continuing...",
+                            self.chesscom_fetch_done, self.chesscom_fetch_total, e
+                        ));
+                    }
+                }
+
+                if self.pending_archives.is_empty() {
+                    self.import_screen.is_loading = false;
+                    self.import_screen.status_message = Some(format!(
+                        "Done — imported {} games across {} months for {}.",
+                        self.games.len(), self.chesscom_fetch_total, self.player_username
+                    ));
+                    Task::none()
+                } else {
+                    self.fetch_next_archive()
+                }
+            }
             AppMessage::Import(ImportMessage::LoadPgnText) => {
+                self.import_screen.current_page = 0;
                 let pgn_text = self.import_screen.pgn_input.clone();
                 let db = Arc::clone(&self.db);
 
@@ -198,6 +308,7 @@ impl App {
                 )
             }
             AppMessage::Import(ImportMessage::LoadSamplePgn) => {
+                self.import_screen.current_page = 0;
                 let db = Arc::clone(&self.db);
                 Task::perform(
                     async move {
@@ -255,12 +366,20 @@ impl App {
                     Task::none()
                 }
             }
+            AppMessage::Import(ImportMessage::NextPage) => {
+                self.import_screen.current_page += 1;
+                Task::none()
+            }
+            AppMessage::Import(ImportMessage::PrevPage) => {
+                self.import_screen.current_page = self.import_screen.current_page.saturating_sub(1);
+                Task::none()
+            }
 
             // --- Async Task Completion Handlers ---
             AppMessage::GamesImported(Ok(games)) => {
                 self.import_screen.is_loading = false;
-                self.import_screen.status_message = Some(format!("Successfully imported {} total games.", games.len()));
-                self.games = games;
+                self.games = games_for_player(games, &self.player_username);
+                self.import_screen.status_message = Some(format!("Successfully imported {} total games.", self.games.len()));
                 self.recompute_insights();
                 Task::none()
             }

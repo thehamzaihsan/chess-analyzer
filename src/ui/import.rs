@@ -8,6 +8,8 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length};
 
+pub const GAMES_PER_PAGE: usize = 25;
+
 #[derive(Debug, Clone)]
 pub enum ImportMessage {
     UsernameChanged(String),
@@ -18,6 +20,8 @@ pub enum ImportMessage {
     SelectGameForReview(i64),
     StartGameAnalysis(i64),
     AnalyzeAllGames,
+    NextPage,
+    PrevPage,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -26,6 +30,7 @@ pub struct ImportScreen {
     pub pgn_input: String,
     pub status_message: Option<String>,
     pub is_loading: bool,
+    pub current_page: usize,
 }
 
 impl ImportScreen {
@@ -35,6 +40,7 @@ impl ImportScreen {
             pgn_input: String::new(),
             status_message: None,
             is_loading: false,
+            current_page: 0,
         }
     }
 
@@ -168,8 +174,12 @@ impl ImportScreen {
         .spacing(spacing::SM)
         .padding([spacing::XS, spacing::SM]);
 
+        let total_pages = games.len().div_ceil(GAMES_PER_PAGE).max(1);
+        let current_page = self.current_page.min(total_pages - 1);
+        let page_start = current_page * GAMES_PER_PAGE;
+
         let mut games_list = column![].spacing(spacing::XXS);
-        for game in games.iter().take(100) {
+        for game in games.iter().skip(page_start).take(GAMES_PER_PAGE) {
             let white_str = format!("{} ({})", game.white, game.white_elo.unwrap_or(0));
             let black_str = format!("{} ({})", game.black, game.black_elo.unwrap_or(0));
             let acc_str = match (game.accuracy_white, game.accuracy_black) {
@@ -224,6 +234,24 @@ impl ImportScreen {
 
         let scrollable_table = scrollable(games_list).height(Length::Fill);
 
+        let pagination_row = row![
+            button(text("< Prev").font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
+                .padding([spacing::XXS, spacing::SM])
+                .style(secondary_button_style)
+                .on_press_maybe(if current_page > 0 { Some(ImportMessage::PrevPage) } else { None }),
+            Space::with_width(spacing::SM),
+            text(format!("Page {} of {}", current_page + 1, total_pages))
+                .font(fonts::MONO)
+                .size(type_scale::BODY)
+                .color(palette::TEXT_SECONDARY),
+            Space::with_width(spacing::SM),
+            button(text("Next >").font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
+                .padding([spacing::XXS, spacing::SM])
+                .style(secondary_button_style)
+                .on_press_maybe(if current_page + 1 < total_pages { Some(ImportMessage::NextPage) } else { None }),
+        ]
+        .align_y(Alignment::Center);
+
         let content = column![
             title,
             Space::with_height(spacing::XS),
@@ -234,6 +262,8 @@ impl ImportScreen {
             table_title_row,
             header_row,
             scrollable_table,
+            Space::with_height(spacing::XS),
+            pagination_row,
         ]
         .spacing(spacing::XS)
         .padding(spacing::MD);
