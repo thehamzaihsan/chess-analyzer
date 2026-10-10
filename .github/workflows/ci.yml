@@ -16,14 +16,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache Stockfish download
+      - name: Cache runtime assets (Stockfish, llama.cpp, Gemma model)
         uses: actions/cache@v4
         with:
-          path: assets/stockfish
-          key: stockfish-sf_19-linux-x86-64-universal
+          path: |
+            assets/stockfish
+            assets/coach
+            assets/models
+          key: runtime-assets-sf_19-llama_b11541-gemma-2-2b-it-Q4_K_M
 
-      - name: Fetch Stockfish (needed by engine tests)
-        run: ./scripts/fetch-assets.sh stockfish
+      - name: Fetch runtime assets (needed by the golden-path e2e test)
+        run: ./scripts/fetch-assets.sh
 
       - name: cargo check
         run: cargo check --all-targets
