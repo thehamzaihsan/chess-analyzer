@@ -13,6 +13,10 @@ fn load_app_icon() -> Option<window::Icon> {
 
 fn main() -> iced::Result {
     iced::application("Chess Analyzer - Native Rust", App::update, App::view)
+        .settings(iced::Settings {
+            id: Some("chess-analyzer".to_string()),
+            ..Default::default()
+        })
         .window(window::Settings {
             size: Size::new(1280.0, 840.0),
             min_size: Some(Size::new(960.0, 640.0)),

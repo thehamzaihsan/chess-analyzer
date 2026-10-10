@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Chess Analyzer
+Comment=Local chess game analysis, engine review, puzzles, and bots
+Exec=__EXEC_PATH__
+Icon=chess-analyzer
+Terminal=false
+Categories=Game;BoardGame;
+StartupWMClass=chess-analyzer

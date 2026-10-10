@@ -53,6 +53,21 @@ directory** (`assets/stockfish/linux/...`, `assets/coach/linux/...`, `assets/mod
 so run it from the project root (or, for a packaged release, from inside the extracted release
 folder — see the `Release` GitHub Actions workflow, which bundles Stockfish alongside the binary).
 
+## Desktop integration (Linux)
+
+The app sets its window/taskbar identity to `chess-analyzer` and uses `assets/logo.svg` (a knight
+badge in the app's accent blue) as its window icon. To also get the logo in your application menu
+and taskbar/dock (not just the window itself — many Wayland compositors resolve the dock icon via
+a `.desktop` entry rather than the window's own icon buffer), run:
+
+```bash
+cargo build --release
+./scripts/install-desktop-entry.sh
+```
+
+This installs `~/.local/share/applications/chess-analyzer.desktop` and
+`~/.local/share/icons/hicolor/256x256/apps/chess-analyzer.png` (user-local, no root needed).
+
 ## CI / Releases
 
 - `.github/workflows/ci.yml` runs `cargo check`/`cargo test` on every push and PR.
