@@ -1,6 +1,6 @@
 use crate::analysis::GameAnalysis;
 use crate::db::StoredGame;
-use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::board::{captured_pieces, captured_tray, BoardMessage, BoardWidget};
 use crate::ui::charts::{EvalGraphMessage, EvalGraphWidget};
 use crate::ui::theme::{
     badge_container_style, card_container_style, classification_color, fonts,
@@ -13,7 +13,7 @@ use iced::widget::{
     button, column, container, row, scrollable, text, Space,
 };
 use iced::{Alignment, Color, Element, Length};
-use shakmaty::Chess;
+use shakmaty::{Chess, Color as PieceColor};
 
 #[derive(Debug, Clone)]
 pub enum GameReviewMessage {
@@ -131,11 +131,32 @@ impl GameReviewScreen {
         let board_and_bar = row![eval_bar, Space::with_width(spacing::SM), board_el]
             .align_y(Alignment::Center);
 
+        let (captured_by_white, captured_by_black, white_advantage) =
+            captured_pieces(&self.board_widget.position);
+        let black_tray = captured_tray(
+            &captured_by_black, PieceColor::White,
+            if white_advantage < 0 { Some(-white_advantage) } else { None },
+            18.0,
+        );
+        let white_tray = captured_tray(
+            &captured_by_white, PieceColor::Black,
+            if white_advantage > 0 { Some(white_advantage) } else { None },
+            18.0,
+        );
+
+        let board_column = column![
+            black_tray,
+            Space::with_height(spacing::XXS),
+            board_and_bar,
+            Space::with_height(spacing::XXS),
+            white_tray,
+        ];
+
         // Right side info & controls
         let sidebar = self.render_sidebar(game, analysis);
 
         let content = row![
-            board_and_bar,
+            board_column,
             Space::with_width(spacing::LG),
             sidebar,
         ]

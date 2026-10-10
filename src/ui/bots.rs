@@ -1,4 +1,4 @@
-use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::board::{captured_pieces, captured_tray, BoardMessage, BoardWidget};
 use crate::ui::theme::{
     card_container_style, fonts, icon_play, icon_widget, palette, primary_button_style,
     spacing, type_scale,
@@ -6,7 +6,7 @@ use crate::ui::theme::{
 use iced::border;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Length};
-use shakmaty::{Chess, Position, Square};
+use shakmaty::{Chess, Color as PieceColor, Position, Square};
 
 #[derive(Debug, Clone)]
 pub enum BotMessage {
@@ -169,6 +169,20 @@ impl BotPlayScreen {
     pub fn view<'a>(&'a self) -> Element<'a, BotMessage> {
         let board_size = 520.0;
         let board_el = self.board_widget.view(board_size).map(BotMessage::Board);
+
+        let (captured_by_white, captured_by_black, white_advantage) =
+            captured_pieces(&self.board_widget.position);
+        let black_tray = captured_tray(
+            &captured_by_black, PieceColor::White,
+            if white_advantage < 0 { Some(-white_advantage) } else { None },
+            18.0,
+        );
+        let white_tray = captured_tray(
+            &captured_by_white, PieceColor::Black,
+            if white_advantage > 0 { Some(white_advantage) } else { None },
+            18.0,
+        );
+        let board_el = column![black_tray, Space::with_height(spacing::XXS), board_el, Space::with_height(spacing::XXS), white_tray];
 
         let title = text("Play Human-Like Personality Bots")
             .font(fonts::UI_BOLD)

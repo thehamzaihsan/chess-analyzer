@@ -313,3 +313,94 @@ impl Program<BoardMessage> for BoardWidget {
         vec![frame.into_geometry()]
     }
 }
+
+fn role_value(role: Role) -> i32 {
+    match role {
+        Role::Pawn => 1,
+        Role::Knight | Role::Bishop => 3,
+        Role::Rook => 5,
+        Role::Queen => 9,
+        Role::King => 0,
+    }
+}
+
+const STARTING_COUNTS: [(Role, u32); 5] = [
+    (Role::Pawn, 8),
+    (Role::Knight, 2),
+    (Role::Bishop, 2),
+    (Role::Rook, 2),
+    (Role::Queen, 1),
+];
+
+/// Returns (pieces White has captured, pieces Black has captured, White's
+/// net material lead in points — negative means Black is ahead).
+pub fn captured_pieces(position: &Chess) -> (Vec<Role>, Vec<Role>, i32) {
+    let mut white_on_board: HashMap<Role, u32> = HashMap::new();
+    let mut black_on_board: HashMap<Role, u32> = HashMap::new();
+
+    for square in Square::ALL {
+        if let Some(piece) = position.board().piece_at(square) {
+            let counts = if piece.color == PieceColor::White {
+                &mut white_on_board
+            } else {
+                &mut black_on_board
+            };
+            *counts.entry(piece.role).or_insert(0) += 1;
+        }
+    }
+
+    let mut captured_by_white = Vec::new(); // black pieces no longer on the board
+    let mut captured_by_black = Vec::new(); // white pieces no longer on the board
+    let mut white_advantage = 0i32;
+
+    for (role, start) in STARTING_COUNTS {
+        let white_missing = start.saturating_sub(*white_on_board.get(&role).unwrap_or(&0));
+        let black_missing = start.saturating_sub(*black_on_board.get(&role).unwrap_or(&0));
+        captured_by_white.extend(std::iter::repeat(role).take(black_missing as usize));
+        captured_by_black.extend(std::iter::repeat(role).take(white_missing as usize));
+        white_advantage += role_value(role) * (black_missing as i32 - white_missing as i32);
+    }
+
+    let by_value_desc = |r: &Role| std::cmp::Reverse(role_value(*r));
+    captured_by_white.sort_by_key(by_value_desc);
+    captured_by_black.sort_by_key(by_value_desc);
+
+    (captured_by_white, captured_by_black, white_advantage)
+}
+
+/// A small row of captured-piece icons plus a "+N" material lead badge,
+/// mirroring the capture tray Chess.com shows above/below the board.
+/// `captured` holds the roles of the pieces this tray's owner has captured;
+/// `captured_color` is the color those captured pieces were (i.e. the
+/// opponent's color) so the right icon set is used.
+pub fn captured_tray<'a, Message: 'a>(
+    captured: &[Role],
+    captured_color: PieceColor,
+    advantage: Option<i32>,
+    icon_size: f32,
+) -> Element<'a, Message> {
+    let handles = get_piece_handles();
+    let mut tray = iced::widget::row![].spacing(2.0).align_y(iced::Alignment::Center);
+
+    for role in captured {
+        if let Some(handle) = handles.get(&(captured_color, *role)) {
+            tray = tray.push(
+                iced::widget::svg(handle.clone())
+                    .width(Length::Fixed(icon_size))
+                    .height(Length::Fixed(icon_size)),
+            );
+        }
+    }
+
+    if let Some(adv) = advantage {
+        if adv > 0 {
+            tray = tray.push(iced::widget::Space::with_width(4.0)).push(
+                iced::widget::text(format!("+{}", adv))
+                    .size(13)
+                    .color(Color::from_rgba8(170, 170, 170, 1.0)),
+            );
+        }
+    }
+
+    tray.into()
+}
