@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, dev]
   pull_request:
 
 jobs:
@@ -37,3 +37,26 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
         continue-on-error: true
+
+  # Feature work lives on dev; main is release-only. Once dev's checks pass,
+  # fast-forward main to dev automatically. ff-only means this never clobbers
+  # main if it has diverged (e.g. a manual hotfix) — it just fails loudly.
+  auto-merge-to-main:
+    needs: check-and-test
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Fast-forward main to dev
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin dev
+          git merge --ff-only origin/dev
+          git push origin main
