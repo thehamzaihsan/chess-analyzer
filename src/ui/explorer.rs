@@ -1,5 +1,5 @@
 use crate::openings::identify_opening;
-use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::board::{board_panel, BoardMessage, BoardWidget};
 use crate::ui::theme::{
     card_container_style, fonts, icon_play, icon_refresh_cw, icon_undo, icon_widget, palette,
     secondary_button_style, spacing, type_scale,
@@ -91,6 +91,7 @@ impl ExplorerScreen {
     pub fn view<'a>(&'a self) -> Element<'a, ExplorerMessage> {
         let board_size = 520.0;
         let board_el = self.board_widget.view(board_size).map(ExplorerMessage::Board);
+        let board_el = board_panel(&self.board_widget.position, board_el);
 
         let title = text("Position & Opening Explorer")
             .font(fonts::UI_BOLD)

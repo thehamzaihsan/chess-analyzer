@@ -404,3 +404,37 @@ pub fn captured_tray<'a, Message: 'a>(
 
     tray.into()
 }
+
+/// The standard chess board layout used by every screen that shows a board:
+/// a captured-piece tray above, the board itself, and a captured-piece tray
+/// below — keeps Game Review, Play Bots, Explorer, and Puzzles visually
+/// consistent instead of each screen hand-rolling its own wrapping.
+///
+/// `board_el` is the caller's already-mapped `BoardWidget::view(...)`
+/// output (mapping is screen-specific, so it's built by the caller);
+/// `position` is read separately to compute the capture trays.
+pub fn board_panel<'a, Message: 'a>(position: &Chess, board_el: Element<'a, Message>) -> Element<'a, Message> {
+    let (captured_by_white, captured_by_black, white_advantage) = captured_pieces(position);
+
+    let black_tray = captured_tray(
+        &captured_by_black,
+        PieceColor::White,
+        if white_advantage < 0 { Some(-white_advantage) } else { None },
+        18.0,
+    );
+    let white_tray = captured_tray(
+        &captured_by_white,
+        PieceColor::Black,
+        if white_advantage > 0 { Some(white_advantage) } else { None },
+        18.0,
+    );
+
+    iced::widget::column![
+        black_tray,
+        iced::widget::Space::with_height(4.0),
+        board_el,
+        iced::widget::Space::with_height(4.0),
+        white_tray,
+    ]
+    .into()
+}

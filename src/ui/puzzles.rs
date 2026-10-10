@@ -1,5 +1,5 @@
 use crate::db::Puzzle;
-use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::board::{board_panel, BoardMessage, BoardWidget};
 use crate::ui::theme::{
     card_container_style, fonts, icon_check, icon_chevron_right, icon_sparkles, icon_widget,
     icon_x, nav_button_style, palette, primary_button_style, secondary_button_style, spacing,
@@ -130,6 +130,7 @@ impl PuzzleScreen {
     pub fn view<'a>(&'a self) -> Element<'a, PuzzleMessage> {
         let board_size = 520.0;
         let board_el = self.board_widget.view(board_size).map(PuzzleMessage::Board);
+        let board_el = board_panel(&self.board_widget.position, board_el);
 
         let title = text("Tactics & Puzzle Trainer")
             .font(fonts::UI_BOLD)
