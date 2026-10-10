@@ -1,0 +1,17 @@
+let instance = 0;
+
+/** The app mark: a knight over a rising trend line. Each instance gets its own
+ * gradient id so several logos on one page don't collide. */
+export function logoSvg(size: number): SVGSVGElement {
+  const id = `logo-bg-${++instance}`;
+  const markup = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${size}" height="${size}" aria-hidden="true">
+  <defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a9a7f"/><stop offset="1" stop-color="#1f5f4e"/></linearGradient></defs>
+  <rect width="64" height="64" rx="15" fill="url(#${id})"/>
+  <polyline points="8,46 18,40 26,43 36,32 46,30 56,18" fill="none" stroke="#fff" stroke-opacity="0.22" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path fill="#fff" d="M22 50 h21 c0-7.5-1.8-11.5-5.6-15.4 l2.9-3.6 c2 1.9 4.9 2.3 6.8 0.8 c1.6-1.4 1.2-3.8-0.7-5.8 l-6.9-7.6 c-2-2.1-4.5-3.1-7.1-3.1 l-1.4-3.9 l-2.6 4.5 c-5.5 2.5-8.9 7.9-9.1 14.6 c-0.2 6.6 2.4 11.4 3.7 13.5 z"/>
+  <circle cx="33.4" cy="21.6" r="1.7" fill="#1f5f4e"/>
+  <rect x="17" y="49" width="31" height="5.5" rx="2.2" fill="#fff"/>
+</svg>`;
+  const doc = new DOMParser().parseFromString(markup, 'image/svg+xml');
+  return document.importNode(doc.documentElement, true) as unknown as SVGSVGElement;
+}

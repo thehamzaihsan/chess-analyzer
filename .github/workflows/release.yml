@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # Bundle the Stockfish engine (needed for Game Review) directly into the
+      # release artifact. The llama.cpp runtime + Gemma model for the coach
+      # feature are left out (large, optional) — fetch-assets.sh is shipped
+      # alongside so users can pull those in afterward if they want the coach.
+      - name: Fetch Stockfish for packaging
+        run: ./scripts/fetch-assets.sh stockfish
+
+      - name: Package release archive
+        run: |
+          set -euo pipefail
+          name="chess-analyzer-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "dist/$name/assets/stockfish"
+          cp target/release/chess-analyzer "dist/$name/"
+          cp -r assets/stockfish/linux "dist/$name/assets/stockfish/linux"
+          cp scripts/fetch-assets.sh "dist/$name/"
+          cp README.md "dist/$name/"
+          tar czf "dist/$name.tar.gz" -C dist "$name"
+          echo "ARCHIVE_PATH=dist/$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE_PATH }}
+          generate_release_notes: true

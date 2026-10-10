@@ -1,0 +1,22 @@
+/target
+*.db
+*.db-journal
+**/*.rs.bk
+
+# Large runtime assets fetched by scripts/fetch-assets.sh instead of being
+# committed (Stockfish binary, llama.cpp runtime, Gemma GGUF model).
+/assets/stockfish/
+/assets/coach/
+/assets/models/
+/assets/lc0/
+
+# Legacy Next.js prototype (kept for reference under web/), its own deps/build output.
+/web/node_modules/
+/web/.next/
+/web/out/
+/web/tsconfig.tsbuildinfo
+
+# Local scratch
+*.log
+screenshot.png
+out.png
