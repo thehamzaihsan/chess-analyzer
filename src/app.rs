@@ -12,6 +12,7 @@ use crate::ui::bots::{BotMessage, BotPlayScreen, BOTS};
 use crate::ui::explorer::{ExplorerMessage, ExplorerScreen};
 use crate::ui::game_review::{GameReviewMessage, GameReviewScreen};
 use crate::ui::import::{ImportMessage, ImportScreen};
+use crate::ui::charts::{ChartMessage, EvalGraphMessage};
 use crate::ui::insights::{InsightsMessage, InsightsScreen};
 use crate::ui::puzzles::{PuzzleMessage, PuzzleScreen};
 use crate::ui::theme::{
@@ -80,7 +81,7 @@ pub struct App {
 impl App {
     pub fn new() -> (Self, Task<AppMessage>) {
         let db = Arc::new(Database::open_default().expect("Failed to initialize SQLite database"));
-        let default_username = "ibn-ehsan".to_string();
+        let default_username = "GothamChess".to_string();
 
         let engine_pool = EnginePool::new((*db).clone()).ok().map(Arc::new);
 
@@ -397,6 +398,13 @@ impl App {
                 }
                 Task::none()
             }
+            AppMessage::GameReview(GameReviewMessage::EvalGraph(egm)) => {
+                match egm {
+                    EvalGraphMessage::SelectPly(ply) => {
+                        self.update(AppMessage::GameReview(GameReviewMessage::GoToMove(ply)))
+                    }
+                }
+            }
             AppMessage::CoachExplanationReceived(Ok(explanation)) => {
                 self.game_review_screen.is_coach_loading = false;
                 self.game_review_screen.coach_explanation = Some(explanation);
@@ -414,6 +422,28 @@ impl App {
             AppMessage::Insights(InsightsMessage::SelectSection(sec)) => {
                 self.insights_screen.current_section = sec;
                 Task::none()
+            }
+
+            AppMessage::Insights(InsightsMessage::Chart(cm)) => {
+                match cm {
+                    ChartMessage::PointClicked(idx) => {
+                        if let Some(pt) = self.insights.rating_history.get(idx) {
+                            if let Some(g) = self.games.iter().find(|g| {
+                                g.date == pt.date && (g.white == pt.opponent || g.black == pt.opponent)
+                            }) {
+                                let gid = g.id;
+                                self.selected_game_id = Some(gid);
+                                self.game_review_screen.load_game(g);
+                                if let Some(an) = self.analyses.get(&gid) {
+                                    self.game_review_screen.set_position_from_analysis(Some(an), 0);
+                                }
+                                self.active_tab = Tab::GameReview;
+                            }
+                        }
+                        Task::none()
+                    }
+                    ChartMessage::PointHovered(_) => Task::none(),
+                }
             }
 
             // --- Puzzles Screen Messages ---

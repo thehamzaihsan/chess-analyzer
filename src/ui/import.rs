@@ -50,7 +50,7 @@ impl ImportScreen {
             .color(palette::TEXT_SECONDARY);
 
         let user_input = text_input(
-            "Enter Chess.com username (e.g. ibn-ehsan)",
+            "Enter Chess.com username (e.g. GothamChess)",
             &self.username_input,
         )
         .font(fonts::UI)

@@ -1,6 +1,7 @@
 use crate::analysis::GameAnalysis;
 use crate::db::StoredGame;
 use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::charts::{EvalGraphMessage, EvalGraphWidget};
 use crate::ui::theme::{
     badge_container_style, card_container_style, classification_color, fonts,
     icon_chevron_left, icon_chevron_right, icon_rotate_ccw, icon_skip_back, icon_skip_forward,
@@ -25,6 +26,7 @@ pub enum GameReviewMessage {
     FlipBoard,
     AskCoach,
     AnalyzeCurrentGame,
+    EvalGraph(EvalGraphMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +186,6 @@ impl GameReviewScreen {
                 ..Default::default()
             });
 
-        // Soft off-white slate for White evaluation block, harmonious with dark theme
         let white_color = Color::from_rgb8(218, 224, 233);
         let white_part = container(
             container(
@@ -204,7 +205,6 @@ impl GameReviewScreen {
             ..Default::default()
         });
 
-        // Enclosed in a bordered, rounded track container
         container(column![black_part, white_part])
             .width(Length::Fixed(bar_width))
             .height(Length::Fixed(height))
@@ -296,7 +296,7 @@ impl GameReviewScreen {
             .into(),
         };
 
-        // Navigation controls with real Lucide SVG icons (skip-back, chevron-left, chevron-right, skip-forward)
+        // Navigation controls with Lucide SVG icons
         let flip_content = row![
             icon_widget(icon_rotate_ccw(), 14.0, Some(palette::TEXT_PRIMARY)),
             text("Flip").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
@@ -328,6 +328,35 @@ impl GameReviewScreen {
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
+
+        // Move Evaluation Graph
+        let eval_graph: Element<'a, GameReviewMessage> = match analysis {
+            Some(an) if !an.moves.is_empty() => {
+                let win_probs: Vec<Option<f32>> = an.moves.iter().map(|m| Some(m.win_prob_after as f32)).collect();
+                let graph_widget = EvalGraphWidget::new(win_probs, self.current_move_idx)
+                    .view(Length::Fill, Length::Fixed(48.0))
+                    .map(|msg| match msg {
+                        EvalGraphMessage::SelectPly(ply) => GameReviewMessage::GoToMove(ply),
+                    });
+
+                container(
+                    column![
+                        row![
+                            text("Advantage Graph").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED),
+                            Space::with_width(Length::Fill),
+                            text("Click graph to jump").font(fonts::UI).size(type_scale::CAPTION).color(palette::TEXT_MUTED),
+                        ]
+                        .align_y(Alignment::Center),
+                        Space::with_height(spacing::XXS),
+                        graph_widget,
+                    ]
+                )
+                .padding(spacing::XS)
+                .style(card_container_style)
+                .into()
+            }
+            _ => Space::new(Length::Shrink, Length::Shrink).into(),
+        };
 
         // Current move details
         let current_move_detail: Element<'a, GameReviewMessage> = match analysis {
@@ -506,7 +535,7 @@ impl GameReviewScreen {
 
         let move_list_card = container(
             scrollable(move_rows)
-                .height(Length::Fixed(240.0))
+                .height(Length::Fixed(190.0))
                 .width(Length::Fill)
         )
         .padding(spacing::SM)
@@ -514,13 +543,15 @@ impl GameReviewScreen {
 
         column![
             game_header,
-            Space::with_height(spacing::XS),
+            Space::with_height(spacing::XXS),
             accuracy_row,
-            Space::with_height(spacing::SM),
+            Space::with_height(spacing::XS),
             nav_controls,
-            Space::with_height(spacing::SM),
+            Space::with_height(spacing::XS),
+            eval_graph,
+            Space::with_height(spacing::XS),
             current_move_detail,
-            Space::with_height(spacing::SM),
+            Space::with_height(spacing::XS),
             move_list_card,
         ]
         .spacing(spacing::XS)

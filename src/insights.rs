@@ -28,10 +28,33 @@ pub struct OpeningStat {
 pub struct RatingPoint {
     pub date: String,
     pub elo: i32,
+    pub result: String, // "win", "draw", "loss"
+    pub opponent: String,
+    pub opponent_elo: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RatingBand {
+    pub label: String, // e.g. "1200-1299"
+    pub lower_bound: i32,
+    pub games_count: usize,
+    pub wins: usize,
+    pub draws: usize,
+    pub losses: usize,
+    pub win_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhenYouPlayStat {
+    pub label: String, // e.g. "Monday", "Afternoon"
+    pub games_count: usize,
+    pub wins: usize,
+    pub win_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OverallInsights {
+    pub player_id: String,
     pub total_games: usize,
     pub wins: usize,
     pub losses: usize,
@@ -49,6 +72,15 @@ pub struct OverallInsights {
     pub avg_accuracy: f64,
     pub skill_scores: SkillScores,
     pub rating_history: Vec<RatingPoint>,
+    pub peak_rating: i32,
+    pub lowest_rating: i32,
+    pub current_rating: i32,
+    pub rating_change: i32,
+
+    pub rating_bands: Vec<RatingBand>,
+    pub weekday_stats: Vec<WhenYouPlayStat>,
+    pub time_of_day_stats: Vec<WhenYouPlayStat>,
+
     pub top_openings: Vec<OpeningStat>,
 
     pub castling_rate: f64,
@@ -57,6 +89,58 @@ pub struct OverallInsights {
 
     pub avg_blunders_per_game: f64,
     pub takeaways: Vec<String>,
+}
+
+/// Detects the most frequently appearing username across games (case-preserved)
+pub fn detect_default_player(games: &[StoredGame]) -> Option<String> {
+    let mut counts: HashMap<String, (String, usize)> = HashMap::new();
+    for g in games {
+        for name in [&g.white, &g.black] {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let key = trimmed.to_lowercase();
+            counts
+                .entry(key)
+                .and_modify(|(_, c)| *c += 1)
+                .or_insert_with(|| (trimmed.to_string(), 1));
+        }
+    }
+    counts.into_values().max_by_key(|(_, c)| *c).map(|(name, _)| name)
+}
+
+fn parse_hour_from_pgn(pgn: &str) -> Option<u32> {
+    for line in pgn.lines() {
+        if line.starts_with("[EndTime \"") || line.starts_with("[UTCTime \"") || line.starts_with("[Time \"") {
+            let after_quote = line.split('"').nth(1)?;
+            let hour_str = after_quote.split(':').next()?;
+            if let Ok(h) = hour_str.parse::<u32>() {
+                if h < 24 {
+                    return Some(h);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_date_weekday(date_str: &str) -> Option<usize> {
+    let s = date_str.replace('.', "-");
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() >= 3 {
+        if let (Ok(y), Ok(m), Ok(d)) = (
+            parts[0].parse::<i32>(),
+            parts[1].parse::<u32>(),
+            parts[2].parse::<u32>(),
+        ) {
+            if let Some(nd) = chrono::NaiveDate::from_ymd_opt(y, m, d) {
+                use chrono::Datelike;
+                return Some(nd.weekday().num_days_from_monday() as usize);
+            }
+        }
+    }
+    None
 }
 
 pub fn compute_insights(
@@ -68,7 +152,22 @@ pub fn compute_insights(
         return OverallInsights::default();
     }
 
-    let user_lower = player_username.trim().to_lowercase();
+    // Determine target player username
+    let target_player = if !player_username.trim().is_empty() {
+        let p_low = player_username.trim().to_lowercase();
+        let found = games.iter().any(|g| {
+            g.white.to_lowercase() == p_low || g.black.to_lowercase() == p_low
+        });
+        if found {
+            player_username.trim().to_string()
+        } else {
+            detect_default_player(games).unwrap_or_else(|| player_username.trim().to_string())
+        }
+    } else {
+        detect_default_player(games).unwrap_or_else(|| "Player".to_string())
+    };
+
+    let user_lower = target_player.to_lowercase();
     let mut wins = 0;
     let mut losses = 0;
     let mut draws = 0;
@@ -87,14 +186,17 @@ pub fn compute_insights(
     let mut castled_games = 0;
 
     let mut opening_map: HashMap<(String, String), (usize, usize, usize, usize)> = HashMap::new();
-    let mut rating_history = Vec::new();
+    let mut rating_history: Vec<RatingPoint> = Vec::new();
+    let mut band_map: HashMap<i32, (usize, usize, usize, usize)> = HashMap::new(); // lower_bound -> (total, w, d, l)
+
+    let mut weekday_counts = vec![(0usize, 0usize); 7]; // (total, wins) for Mon..Sun
+    let mut tod_counts = vec![(0usize, 0usize); 4]; // (total, wins) for Night, Morning, Afternoon, Evening
 
     for (idx, game) in games.iter().enumerate() {
         let is_user_white = game.white.to_lowercase() == user_lower;
         let is_user_black = game.black.to_lowercase() == user_lower;
 
-        // Skip if user not in game and username was given, unless username is empty
-        if !user_lower.is_empty() && !is_user_white && !is_user_black {
+        if !is_user_white && !is_user_black && !user_lower.is_empty() {
             continue;
         }
 
@@ -121,21 +223,67 @@ pub fn compute_insights(
             losses += 1;
         }
 
-        if is_white {
+        let (my_elo, opp_elo, opp_name) = if is_white {
             white_games += 1;
-            if let Some(elo) = game.white_elo {
-                rating_history.push(RatingPoint {
-                    date: game.date.clone(),
-                    elo,
-                });
-            }
+            (game.white_elo, game.black_elo, game.black.clone())
         } else {
             black_games += 1;
-            if let Some(elo) = game.black_elo {
-                rating_history.push(RatingPoint {
-                    date: game.date.clone(),
-                    elo,
-                });
+            (game.black_elo, game.white_elo, game.white.clone())
+        };
+
+        let res_str = if is_draw {
+            "draw"
+        } else if user_won {
+            "win"
+        } else {
+            "loss"
+        };
+
+        if let Some(elo) = my_elo {
+            rating_history.push(RatingPoint {
+                date: game.date.clone(),
+                elo,
+                result: res_str.to_string(),
+                opponent: opp_name,
+                opponent_elo: opp_elo,
+            });
+        }
+
+        // Opponent Rating Bands
+        if let Some(oe) = opp_elo {
+            let lower_bound = (oe / 100) * 100;
+            let entry = band_map.entry(lower_bound).or_insert((0, 0, 0, 0));
+            entry.0 += 1;
+            if is_draw {
+                entry.2 += 1;
+            } else if user_won {
+                entry.1 += 1;
+            } else {
+                entry.3 += 1;
+            }
+        }
+
+        // When You Play: Weekday
+        if let Some(wd) = parse_date_weekday(&game.date) {
+            if wd < 7 {
+                weekday_counts[wd].0 += 1;
+                if user_won {
+                    weekday_counts[wd].1 += 1;
+                }
+            }
+        }
+
+        // When You Play: Time of Day
+        if let Some(hour) = parse_hour_from_pgn(&game.pgn) {
+            let tod_idx = match hour {
+                0..=5 => 0,   // Night
+                6..=11 => 1,  // Morning
+                12..=17 => 2, // Afternoon
+                _ => 3,       // Evening
+            };
+            tod_counts[tod_idx].0 += 1;
+            if user_won {
+                tod_counts[tod_idx].1 += 1;
             }
         }
 
@@ -256,6 +404,65 @@ pub fn compute_insights(
         time_management,
     };
 
+    // Rating Progression Statistics
+    let peak_rating = rating_history.iter().map(|p| p.elo).max().unwrap_or(0);
+    let lowest_rating = rating_history.iter().map(|p| p.elo).min().unwrap_or(0);
+    let current_rating = rating_history.last().map(|p| p.elo).unwrap_or(0);
+    let first_rating = rating_history.first().map(|p| p.elo).unwrap_or(current_rating);
+    let rating_change = current_rating - first_rating;
+
+    // Rating Bands
+    let mut rating_bands: Vec<RatingBand> = band_map
+        .into_iter()
+        .map(|(lower, (cnt, w, d, l))| {
+            let wr = if cnt > 0 { (w as f64 / cnt as f64) * 100.0 } else { 0.0 };
+            RatingBand {
+                label: format!("{}-{}", lower, lower + 99),
+                lower_bound: lower,
+                games_count: cnt,
+                wins: w,
+                draws: d,
+                losses: l,
+                win_rate: wr,
+            }
+        })
+        .collect();
+    rating_bands.sort_by_key(|b| b.lower_bound);
+
+    // Weekday stats
+    let weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    let weekday_stats: Vec<WhenYouPlayStat> = weekday_names
+        .iter()
+        .enumerate()
+        .map(|(i, &name)| {
+            let (cnt, w) = weekday_counts[i];
+            let wr = if cnt > 0 { (w as f64 / cnt as f64) * 100.0 } else { 0.0 };
+            WhenYouPlayStat {
+                label: name.to_string(),
+                games_count: cnt,
+                wins: w,
+                win_rate: wr,
+            }
+        })
+        .collect();
+
+    // Time of day stats
+    let tod_names = ["Night (0-6)", "Morning (6-12)", "Afternoon (12-18)", "Evening (18-24)"];
+    let time_of_day_stats: Vec<WhenYouPlayStat> = tod_names
+        .iter()
+        .enumerate()
+        .map(|(i, &name)| {
+            let (cnt, w) = tod_counts[i];
+            let wr = if cnt > 0 { (w as f64 / cnt as f64) * 100.0 } else { 0.0 };
+            WhenYouPlayStat {
+                label: name.to_string(),
+                games_count: cnt,
+                wins: w,
+                win_rate: wr,
+            }
+        })
+        .collect();
+
     // Top openings:
     let mut top_openings: Vec<OpeningStat> = opening_map
         .into_iter()
@@ -276,6 +483,12 @@ pub fn compute_insights(
 
     // Natural language takeaways:
     let mut takeaways = Vec::new();
+    if peak_rating > 0 {
+        takeaways.push(format!(
+            "Your peak rating is {} Elo across {} tracked rated games (current: {} Elo).",
+            peak_rating, rating_history.len(), current_rating
+        ));
+    }
     if white_win_rate > black_win_rate + 10.0 {
         takeaways.push(format!(
             "Noticeable color asymmetry: you win {:.1}% as White vs {:.1}% as Black.",
@@ -307,6 +520,7 @@ pub fn compute_insights(
     }
 
     OverallInsights {
+        player_id: target_player,
         total_games: total,
         wins,
         losses,
@@ -321,6 +535,13 @@ pub fn compute_insights(
         avg_accuracy,
         skill_scores,
         rating_history,
+        peak_rating,
+        lowest_rating,
+        current_rating,
+        rating_change,
+        rating_bands,
+        weekday_stats,
+        time_of_day_stats,
         top_openings,
         castling_rate,
         early_queen_rate,
