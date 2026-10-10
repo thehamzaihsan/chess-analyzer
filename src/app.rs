@@ -430,9 +430,14 @@ impl App {
                 Task::none()
             }
             AppMessage::GameReview(GameReviewMessage::GoToMove(idx)) => {
-                self.game_review_screen.current_move_idx = idx;
-                self.game_review_screen.coach_explanation = None;
-                if let Some(game_id) = self.selected_game_id {
+                // Prefer the already-computed analysis (an O(1) lookup of a
+                // precomputed FEN) over re-parsing the game's PGN and
+                // replaying every move from scratch on every single click,
+                // which is what made Prev/Next feel sluggish on longer games.
+                let analysis = self.selected_game_id.and_then(|id| self.analyses.get(&id));
+                if analysis.is_some() {
+                    self.game_review_screen.set_position_from_analysis(analysis, idx);
+                } else if let Some(game_id) = self.selected_game_id {
                     if let Some(g) = self.games.iter().find(|g| g.id == game_id) {
                         self.game_review_screen.update_board_to_move(g, idx);
                     }
