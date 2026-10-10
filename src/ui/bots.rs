@@ -1,4 +1,5 @@
-use crate::ui::board::{board_panel, BoardMessage, BoardWidget};
+use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
 use crate::ui::theme::{
     card_container_style, fonts, icon_play, icon_widget, palette, primary_button_style,
     spacing, type_scale,
@@ -167,9 +168,37 @@ impl BotPlayScreen {
     }
 
     pub fn view<'a>(&'a self) -> Element<'a, BotMessage> {
-        let board_size = 520.0;
-        let board_el = self.board_widget.view(board_size).map(BotMessage::Board);
-        let board_el = board_panel(&self.board_widget.position, board_el);
+        let bot = self.current_bot();
+        let is_white_turn = self.board_widget.position.turn() == shakmaty::Color::White;
+
+        let bot_is_white = !self.player_is_white;
+        let bot_active = if bot_is_white { is_white_turn } else { !is_white_turn };
+        let player_active = if self.player_is_white { is_white_turn } else { !is_white_turn };
+
+        let bot_player = PlayerInfo::new(bot.name, bot_is_white)
+            .with_rating(Some(bot.elo as i32))
+            .with_title(bot.title)
+            .with_status(if self.is_engine_thinking { "Thinking..." } else { "Bot" })
+            .with_active_turn(bot_active);
+
+        let user_player = PlayerInfo::new("You", self.player_is_white)
+            .with_status(if self.is_engine_thinking { "Waiting..." } else { "Your turn" })
+            .with_active_turn(player_active);
+
+        let (top_player, bottom_player) = if self.board_widget.flipped {
+            (&user_player, &bot_player)
+        } else {
+            (&bot_player, &user_player)
+        };
+
+        let board_el = render_unified_board_column(
+            top_player,
+            bottom_player,
+            &self.board_widget.position,
+            &self.board_widget,
+            BotMessage::Board,
+            None,
+        );
 
         let title = text("Play Human-Like Personality Bots")
             .font(fonts::UI_BOLD)

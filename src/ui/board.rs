@@ -1,6 +1,6 @@
 use iced::event::Status;
 use iced::mouse::{self, Cursor};
-use iced::widget::canvas::{self, Event, Frame, Geometry, Path, Program, Stroke, Text};
+use iced::widget::canvas::{self, stroke::{LineCap, LineJoin}, Event, Frame, Geometry, Path, Program, Stroke, Text};
 use iced::widget::svg::Handle;
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 use shakmaty::{Chess, Color as PieceColor, File, Position, Rank, Role, Square};
@@ -49,6 +49,21 @@ pub enum BoardMessage {
     SquareClicked(Square),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrowColor {
+    Green,   // Best move / engine recommendation
+    Red,     // Threat / mistake
+    Blue,    // Candidate / alternate
+    Orange,  // Warning / caution
+}
+
+#[derive(Debug, Clone)]
+pub struct BoardArrow {
+    pub from: Square,
+    pub to: Square,
+    pub color: ArrowColor,
+}
+
 #[derive(Debug, Clone)]
 pub struct BoardWidget {
     pub position: Chess,
@@ -56,6 +71,7 @@ pub struct BoardWidget {
     pub selected_square: Option<Square>,
     pub last_move: Option<(Square, Square)>,
     pub best_move_arrow: Option<(Square, Square)>,
+    pub custom_arrows: Vec<BoardArrow>,
 }
 
 impl BoardWidget {
@@ -70,6 +86,7 @@ impl BoardWidget {
             selected_square: None,
             last_move: None,
             best_move_arrow: None,
+            custom_arrows: Vec::new(),
         }
     }
 
@@ -275,42 +292,162 @@ impl Program<BoardMessage> for BoardWidget {
             }
         }
 
-        // 5. Draw Engine Best Move Arrow
+        // 5. Draw Engine & Custom Arrows
         if let Some((from, to)) = self.best_move_arrow {
-            let from_rect = self.square_to_rect(from, sq_size);
-            let to_rect = self.square_to_rect(to, sq_size);
-            let p1 = Point::new(from_rect.x + sq_size / 2.0, from_rect.y + sq_size / 2.0);
-            let p2 = Point::new(to_rect.x + sq_size / 2.0, to_rect.y + sq_size / 2.0);
-
-            let arrow_color = Color::from_rgba8(40, 180, 80, 0.75);
-            let arrow_stroke = Stroke::default().with_color(arrow_color).with_width(sq_size * 0.14);
-
-            let path = Path::line(p1, p2);
-            frame.stroke(&path, arrow_stroke);
-
-            let angle = (p2.y - p1.y).atan2(p2.x - p1.x);
-            let head_len = sq_size * 0.28;
-            let head_angle = std::f32::consts::PI / 6.0;
-
-            let h1 = Point::new(
-                p2.x - head_len * (angle - head_angle).cos(),
-                p2.y - head_len * (angle - head_angle).sin(),
-            );
-            let h2 = Point::new(
-                p2.x - head_len * (angle + head_angle).cos(),
-                p2.y - head_len * (angle + head_angle).sin(),
-            );
-
-            let head_path = Path::new(|builder| {
-                builder.move_to(p2);
-                builder.line_to(h1);
-                builder.line_to(h2);
-                builder.close();
-            });
-            frame.fill(&head_path, arrow_color);
+            draw_chess_arrow(&mut frame, from, to, ArrowColor::Green, self.flipped, sq_size);
+        }
+        for arrow in &self.custom_arrows {
+            draw_chess_arrow(&mut frame, arrow.from, arrow.to, arrow.color, self.flipped, sq_size);
         }
 
         vec![frame.into_geometry()]
+    }
+}
+
+fn draw_chess_arrow(
+    frame: &mut Frame,
+    from: Square,
+    to: Square,
+    color_type: ArrowColor,
+    flipped: bool,
+    sq_size: f32,
+) {
+    let file1 = from.file() as u8;
+    let rank1 = from.rank() as u8;
+    let col1 = if flipped { 7 - file1 } else { file1 };
+    let row1 = if flipped { rank1 } else { 7 - rank1 };
+
+    let file2 = to.file() as u8;
+    let rank2 = to.rank() as u8;
+    let col2 = if flipped { 7 - file2 } else { file2 };
+    let row2 = if flipped { rank2 } else { 7 - rank2 };
+
+    let p1 = Point::new(col1 as f32 * sq_size + sq_size / 2.0, row1 as f32 * sq_size + sq_size / 2.0);
+    let p2 = Point::new(col2 as f32 * sq_size + sq_size / 2.0, row2 as f32 * sq_size + sq_size / 2.0);
+
+    let (arrow_fill, arrow_shadow) = match color_type {
+        ArrowColor::Green => (
+            Color::from_rgba8(38, 182, 86, 0.88),
+            Color::from_rgba8(10, 40, 20, 0.40),
+        ),
+        ArrowColor::Red => (
+            Color::from_rgba8(235, 75, 65, 0.88),
+            Color::from_rgba8(45, 15, 15, 0.40),
+        ),
+        ArrowColor::Blue => (
+            Color::from_rgba8(59, 130, 246, 0.88),
+            Color::from_rgba8(15, 25, 50, 0.40),
+        ),
+        ArrowColor::Orange => (
+            Color::from_rgba8(230, 140, 30, 0.88),
+            Color::from_rgba8(45, 25, 10, 0.40),
+        ),
+    };
+
+    let dx = p2.x - p1.x;
+    let dy = p2.y - p1.y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1.0 {
+        return;
+    }
+
+    let df = (file1 as i32 - file2 as i32).abs();
+    let dr = (rank1 as i32 - rank2 as i32).abs();
+    let is_knight = (df == 1 && dr == 2) || (df == 2 && dr == 1);
+
+    let head_len = sq_size * 0.34;
+    let head_width = sq_size * 0.42;
+    let shaft_width = sq_size * 0.16;
+
+    if is_knight {
+        let corner = if dr == 2 {
+            Point::new(p1.x, p2.y)
+        } else {
+            Point::new(p2.x, p1.y)
+        };
+
+        let shadow_stroke = Stroke::default()
+            .with_color(arrow_shadow)
+            .with_width(shaft_width + 3.0)
+            .with_line_cap(LineCap::Round)
+            .with_line_join(LineJoin::Round);
+
+        let main_stroke = Stroke::default()
+            .with_color(arrow_fill)
+            .with_width(shaft_width)
+            .with_line_cap(LineCap::Round)
+            .with_line_join(LineJoin::Round);
+
+        let dir2_x = p2.x - corner.x;
+        let dir2_y = p2.y - corner.y;
+        let dist2 = (dir2_x * dir2_x + dir2_y * dir2_y).sqrt();
+        let u2 = (dir2_x / dist2, dir2_y / dist2);
+        let perp2 = (-u2.1, u2.0);
+
+        let shaft_end = Point::new(p2.x - u2.0 * (head_len * 0.85), p2.y - u2.1 * (head_len * 0.85));
+
+        let l_path = Path::new(|builder| {
+            builder.move_to(p1);
+            builder.line_to(corner);
+            builder.line_to(shaft_end);
+        });
+
+        frame.stroke(&l_path, shadow_stroke);
+        frame.stroke(&l_path, main_stroke);
+
+        let tip = Point::new(p2.x - u2.0 * (sq_size * 0.08), p2.y - u2.1 * (sq_size * 0.08));
+        let base_c = Point::new(tip.x - u2.0 * head_len, tip.y - u2.1 * head_len);
+        let left_w = Point::new(base_c.x + perp2.0 * (head_width / 2.0), base_c.y + perp2.1 * (head_width / 2.0));
+        let right_w = Point::new(base_c.x - perp2.0 * (head_width / 2.0), base_c.y - perp2.1 * (head_width / 2.0));
+        let indent = Point::new(base_c.x + u2.0 * (head_len * 0.22), base_c.y + u2.1 * (head_len * 0.22));
+
+        let head_path = Path::new(|builder| {
+            builder.move_to(tip);
+            builder.line_to(left_w);
+            builder.line_to(indent);
+            builder.line_to(right_w);
+            builder.close();
+        });
+
+        frame.fill(&head_path, arrow_shadow);
+        frame.fill(&head_path, arrow_fill);
+    } else {
+        let u = (dx / dist, dy / dist);
+        let perp = (-u.1, u.0);
+
+        let shaft_start = Point::new(p1.x + u.0 * (sq_size * 0.20), p1.y + u.1 * (sq_size * 0.20));
+        let shaft_end = Point::new(p2.x - u.0 * (head_len * 0.82), p2.y - u.1 * (head_len * 0.82));
+
+        let shadow_stroke = Stroke::default()
+            .with_color(arrow_shadow)
+            .with_width(shaft_width + 3.0)
+            .with_line_cap(LineCap::Round);
+
+        let main_stroke = Stroke::default()
+            .with_color(arrow_fill)
+            .with_width(shaft_width)
+            .with_line_cap(LineCap::Round);
+
+        let shaft_path = Path::line(shaft_start, shaft_end);
+        frame.stroke(&shaft_path, shadow_stroke);
+        frame.stroke(&shaft_path, main_stroke);
+
+        let tip = Point::new(p2.x - u.0 * (sq_size * 0.08), p2.y - u.1 * (sq_size * 0.08));
+        let base_c = Point::new(tip.x - u.0 * head_len, tip.y - u.1 * head_len);
+        let left_w = Point::new(base_c.x + perp.0 * (head_width / 2.0), base_c.y + perp.1 * (head_width / 2.0));
+        let right_w = Point::new(base_c.x - perp.0 * (head_width / 2.0), base_c.y - perp.1 * (head_width / 2.0));
+        let indent = Point::new(base_c.x + u.0 * (head_len * 0.22), base_c.y + u.1 * (head_len * 0.22));
+
+        let head_path = Path::new(|builder| {
+            builder.move_to(tip);
+            builder.line_to(left_w);
+            builder.line_to(indent);
+            builder.line_to(right_w);
+            builder.close();
+        });
+
+        frame.fill(&head_path, arrow_shadow);
+        frame.fill(&head_path, arrow_fill);
     }
 }
 

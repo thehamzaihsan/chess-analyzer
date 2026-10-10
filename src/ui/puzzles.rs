@@ -1,5 +1,6 @@
 use crate::db::Puzzle;
-use crate::ui::board::{board_panel, BoardMessage, BoardWidget};
+use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
 use crate::ui::theme::{
     card_container_style, fonts, icon_check, icon_chevron_right, icon_sparkles, icon_widget,
     icon_x, nav_button_style, palette, primary_button_style, secondary_button_style, spacing,
@@ -128,9 +129,44 @@ impl PuzzleScreen {
     }
 
     pub fn view<'a>(&'a self) -> Element<'a, PuzzleMessage> {
-        let board_size = 520.0;
-        let board_el = self.board_widget.view(board_size).map(PuzzleMessage::Board);
-        let board_el = board_panel(&self.board_widget.position, board_el);
+        let is_white_turn = self.board_widget.position.turn() == shakmaty::Color::White;
+        let puzzle_rating = self.current_puzzle.as_ref().map(|p| p.rating);
+        let puzzle_source = self.current_puzzle.as_ref().map(|p| p.source.as_str()).unwrap_or("Puzzle");
+
+        let user_is_white = if self.board_widget.flipped { false } else { true };
+        let opp_is_white = !user_is_white;
+
+        let opp_player = PlayerInfo::new(format!("Opponent ({})", puzzle_source), opp_is_white)
+            .with_rating(puzzle_rating)
+            .with_title("PUZZLE")
+            .with_active_turn(!is_white_turn);
+
+        let user_status = if self.is_solved {
+            "Solved!"
+        } else if self.puzzle_status.starts_with("Incorrect") {
+            "Try again!"
+        } else {
+            "Your turn"
+        };
+
+        let user_player = PlayerInfo::new("You", user_is_white)
+            .with_status(user_status)
+            .with_active_turn(is_white_turn);
+
+        let (top_player, bottom_player) = if self.board_widget.flipped {
+            (&user_player, &opp_player)
+        } else {
+            (&opp_player, &user_player)
+        };
+
+        let board_el = render_unified_board_column(
+            top_player,
+            bottom_player,
+            &self.board_widget.position,
+            &self.board_widget,
+            PuzzleMessage::Board,
+            None,
+        );
 
         let title = text("Tactics & Puzzle Trainer")
             .font(fonts::UI_BOLD)

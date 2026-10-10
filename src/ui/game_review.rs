@@ -1,6 +1,8 @@
 use crate::analysis::GameAnalysis;
 use crate::db::StoredGame;
-use crate::ui::board::{board_panel, BoardMessage, BoardWidget};
+use crate::ui::board::{BoardMessage, BoardWidget};
+use shakmaty::Position;
+use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
 use crate::ui::charts::{EvalGraphMessage, EvalGraphWidget};
 use crate::ui::theme::{
     badge_container_style, card_container_style, classification_color, fonts,
@@ -122,18 +124,36 @@ impl GameReviewScreen {
         game: Option<&'a StoredGame>,
         analysis: Option<&'a GameAnalysis>,
     ) -> Element<'a, GameReviewMessage> {
-        let board_size = 520.0;
-        let board_el = self.board_widget.view(board_size).map(GameReviewMessage::Board);
+        let (white_name, white_elo) = game.map(|g| (g.white.as_str(), g.white_elo)).unwrap_or(("White", None));
+        let (black_name, black_elo) = game.map(|g| (g.black.as_str(), g.black_elo)).unwrap_or(("Black", None));
 
-        // Cohesive dark-theme evaluation bar
-        let eval_bar = self.render_eval_bar(analysis, board_size);
+        let is_white_turn = self.board_widget.position.turn() == shakmaty::Color::White;
 
-        let board_and_bar = row![eval_bar, Space::with_width(spacing::SM), board_el]
-            .align_y(Alignment::Center);
+        let white_player = PlayerInfo::new(white_name, true)
+            .with_rating(white_elo)
+            .with_active_turn(is_white_turn);
 
-        let board_column = board_panel(&self.board_widget.position, board_and_bar.into());
+        let black_player = PlayerInfo::new(black_name, false)
+            .with_rating(black_elo)
+            .with_active_turn(!is_white_turn);
 
-        // Right side info & controls
+        let (top_player, bottom_player) = if self.board_widget.flipped {
+            (&white_player, &black_player)
+        } else {
+            (&black_player, &white_player)
+        };
+
+        let eval_bar = self.render_eval_bar(analysis, 520.0);
+
+        let board_column = render_unified_board_column(
+            top_player,
+            bottom_player,
+            &self.board_widget.position,
+            &self.board_widget,
+            GameReviewMessage::Board,
+            Some(eval_bar),
+        );
+
         let sidebar = self.render_sidebar(game, analysis);
 
         let content = row![

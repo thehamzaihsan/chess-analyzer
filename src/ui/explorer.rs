@@ -1,5 +1,6 @@
 use crate::openings::identify_opening;
-use crate::ui::board::{board_panel, BoardMessage, BoardWidget};
+use crate::ui::board::{BoardMessage, BoardWidget};
+use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
 use crate::ui::theme::{
     card_container_style, fonts, icon_play, icon_refresh_cw, icon_undo, icon_widget, palette,
     secondary_button_style, spacing, type_scale,
@@ -89,9 +90,28 @@ impl ExplorerScreen {
     }
 
     pub fn view<'a>(&'a self) -> Element<'a, ExplorerMessage> {
-        let board_size = 520.0;
-        let board_el = self.board_widget.view(board_size).map(ExplorerMessage::Board);
-        let board_el = board_panel(&self.board_widget.position, board_el);
+        let is_white_turn = self.board_widget.position.turn() == shakmaty::Color::White;
+
+        let black_player = PlayerInfo::new("Black", false)
+            .with_active_turn(!is_white_turn);
+
+        let white_player = PlayerInfo::new("White", true)
+            .with_active_turn(is_white_turn);
+
+        let (top_player, bottom_player) = if self.board_widget.flipped {
+            (&white_player, &black_player)
+        } else {
+            (&black_player, &white_player)
+        };
+
+        let board_el = render_unified_board_column(
+            top_player,
+            bottom_player,
+            &self.board_widget.position,
+            &self.board_widget,
+            ExplorerMessage::Board,
+            None,
+        );
 
         let title = text("Position & Opening Explorer")
             .font(fonts::UI_BOLD)
