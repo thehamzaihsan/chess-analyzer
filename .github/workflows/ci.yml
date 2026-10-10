@@ -16,6 +16,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cache Stockfish download
+        uses: actions/cache@v4
+        with:
+          path: assets/stockfish
+          key: stockfish-sf_19-linux-x86-64-universal
+
+      - name: Fetch Stockfish (needed by engine tests)
+        run: ./scripts/fetch-assets.sh stockfish
+
       - name: cargo check
         run: cargo check --all-targets
 
