@@ -33,5 +33,6 @@ fn main() -> iced::Result {
             ..Default::default()
         })
         .theme(App::theme)
+        .subscription(App::subscription)
         .run_with(App::new)
 }

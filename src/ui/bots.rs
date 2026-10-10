@@ -76,6 +76,7 @@ impl BotPlayScreen {
     }
 
     pub fn reset_game(&mut self) {
+        crate::audio::play_sound(crate::audio::SoundType::GameStart);
         self.board_widget.position = Chess::default();
         self.board_widget.last_move = None;
         self.board_widget.selected_square = None;
@@ -119,14 +120,18 @@ impl BotPlayScreen {
         for m in moves {
             if m.from() == Some(from) && m.to() == to {
                 if let Ok(next_pos) = self.board_widget.position.clone().play(m.clone()) {
+                    let sound = crate::audio::sound_for_move(&m, &next_pos);
+                    crate::audio::play_sound(sound);
                     self.board_widget.position = next_pos;
                     self.board_widget.last_move = Some((from, to));
                     self.board_widget.selected_square = None;
 
                     if self.board_widget.position.is_checkmate() {
+                        crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                         self.game_status = "Checkmate! You won!".to_string();
                         return None;
                     } else if self.board_widget.position.is_game_over() {
+                        crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                         self.game_status = "Game drawn.".to_string();
                         return None;
                     }
@@ -147,13 +152,17 @@ impl BotPlayScreen {
             if let Ok(valid_m) = m.to_move(&self.board_widget.position) {
                 let from = valid_m.from().unwrap_or(Square::E7);
                 let to = valid_m.to();
-                if let Ok(next_pos) = self.board_widget.position.clone().play(valid_m) {
+                if let Ok(next_pos) = self.board_widget.position.clone().play(valid_m.clone()) {
+                    let sound = crate::audio::sound_for_move(&valid_m, &next_pos);
+                    crate::audio::play_sound(sound);
                     self.board_widget.position = next_pos;
                     self.board_widget.last_move = Some((from, to));
 
                     if self.board_widget.position.is_checkmate() {
+                        crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                         self.game_status = format!("Checkmate! {} won.", self.current_bot().name);
                     } else if self.board_widget.position.is_game_over() {
+                        crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                         self.game_status = "Game drawn.".to_string();
                     } else {
                         self.game_status = "Your turn! Make your move.".to_string();

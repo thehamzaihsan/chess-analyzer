@@ -110,3 +110,18 @@ fn test_stockfish_discovery() {
     let sf_path = discover_engine_path("stockfish");
     assert!(sf_path.is_some(), "Stockfish binary must be discoverable in assets/stockfish/");
 }
+
+#[test]
+fn test_chesscom_sound_classification() {
+    use chess_analyzer::audio::{sound_for_san, SoundType};
+
+    assert_eq!(sound_for_san("e4"), SoundType::Move);
+    assert_eq!(sound_for_san("Nf3"), SoundType::Move);
+    assert_eq!(sound_for_san("Nxd4"), SoundType::Capture);
+    assert_eq!(sound_for_san("exd5"), SoundType::Capture);
+    assert_eq!(sound_for_san("O-O"), SoundType::Castle);
+    assert_eq!(sound_for_san("O-O-O"), SoundType::Castle);
+    assert_eq!(sound_for_san("e8=Q"), SoundType::Promote);
+    assert_eq!(sound_for_san("Qh5+"), SoundType::Check);
+    assert_eq!(sound_for_san("Qxf7#"), SoundType::Check);
+}

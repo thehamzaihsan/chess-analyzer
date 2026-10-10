@@ -22,7 +22,7 @@ use crate::ui::theme::{
 };
 use iced::border;
 use iced::widget::{button, column, container, row, text, Space};
-use iced::{Alignment, Element, Length, Task, Theme};
+use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -156,6 +156,76 @@ impl App {
         custom_dark_theme()
     }
 
+    pub fn subscription(&self) -> Subscription<AppMessage> {
+        use iced::keyboard::{self, key::Named, Key};
+
+        match self.active_tab {
+            Tab::GameReview => {
+                keyboard::on_key_press(|key, _modifiers| {
+                    match key {
+                        // Forward / Next move: Right Arrow, Space, PageDown
+                        Key::Named(Named::ArrowRight)
+                        | Key::Named(Named::Space)
+                        | Key::Named(Named::PageDown) => {
+                            Some(AppMessage::GameReview(GameReviewMessage::NextMove))
+                        }
+                        // Backward / Previous move: Left Arrow, Backspace, PageUp
+                        Key::Named(Named::ArrowLeft)
+                        | Key::Named(Named::Backspace)
+                        | Key::Named(Named::PageUp) => {
+                            Some(AppMessage::GameReview(GameReviewMessage::PrevMove))
+                        }
+                        // Start position / First move: Home, Up Arrow
+                        Key::Named(Named::Home) | Key::Named(Named::ArrowUp) => {
+                            Some(AppMessage::GameReview(GameReviewMessage::FirstMove))
+                        }
+                        // End position / Last move: End, Down Arrow
+                        Key::Named(Named::End) | Key::Named(Named::ArrowDown) => {
+                            Some(AppMessage::GameReview(GameReviewMessage::LastMove))
+                        }
+                        // Flip board: 'f' or 'x'
+                        Key::Character(ref c)
+                            if c.as_str().eq_ignore_ascii_case("f")
+                                || c.as_str().eq_ignore_ascii_case("x") =>
+                        {
+                            Some(AppMessage::GameReview(GameReviewMessage::FlipBoard))
+                        }
+                        _ => None,
+                    }
+                })
+            }
+            Tab::Explorer => {
+                keyboard::on_key_press(|key, _modifiers| {
+                    match key {
+                        Key::Named(Named::ArrowLeft) | Key::Named(Named::Backspace) => {
+                            Some(AppMessage::Explorer(ExplorerMessage::UndoMove))
+                        }
+                        Key::Named(Named::Home) => {
+                            Some(AppMessage::Explorer(ExplorerMessage::ResetBoard))
+                        }
+                        _ => None,
+                    }
+                })
+            }
+            _ => Subscription::none(),
+        }
+    }
+
+    pub fn current_game_total_moves(&self) -> usize {
+        if let Some(id) = self.selected_game_id {
+            if let Some(an) = self.analyses.get(&id) {
+                return an.moves.len();
+            }
+            if let Some(g) = self.games.iter().find(|g| g.id == id) {
+                return crate::pgn::parse_pgn_games(&g.pgn)
+                    .first()
+                    .map(|pg| pg.moves.len())
+                    .unwrap_or(0);
+            }
+        }
+        0
+    }
+
     fn recompute_insights(&mut self) {
         let analyses_vec: Vec<Option<GameAnalysis>> = self
             .games
@@ -216,6 +286,14 @@ impl App {
                 } else if tab == Tab::Puzzles && self.puzzle_screen.current_puzzle.is_none() {
                     if let Ok(Some(p)) = self.db.get_random_puzzle(self.puzzle_screen.filter.as_deref()) {
                         self.puzzle_screen.load_puzzle(p);
+                    }
+                } else if tab == Tab::GameReview && self.selected_game_id.is_none() {
+                    if let Some(first_game) = self.games.first() {
+                        let game_id = first_game.id;
+                        self.selected_game_id = Some(game_id);
+                        self.game_review_screen.current_move_idx = 0;
+                        self.game_review_screen.coach_explanation = None;
+                        self.game_review_screen.load_game(first_game);
                     }
                 }
                 Task::none()
@@ -434,12 +512,27 @@ impl App {
                 // precomputed FEN) over re-parsing the game's PGN and
                 // replaying every move from scratch on every single click,
                 // which is what made Prev/Next feel sluggish on longer games.
+                let max_moves = self.current_game_total_moves();
+                let bounded_idx = idx.min(max_moves);
                 let analysis = self.selected_game_id.and_then(|id| self.analyses.get(&id));
-                if analysis.is_some() {
-                    self.game_review_screen.set_position_from_analysis(analysis, idx);
+                if let Some(an) = analysis {
+                    if bounded_idx > 0 {
+                        if let Some(m) = an.moves.get(bounded_idx - 1) {
+                            crate::audio::play_sound(crate::audio::sound_for_san(&m.san));
+                        }
+                    }
+                    self.game_review_screen.set_position_from_analysis(analysis, bounded_idx);
                 } else if let Some(game_id) = self.selected_game_id {
                     if let Some(g) = self.games.iter().find(|g| g.id == game_id) {
-                        self.game_review_screen.update_board_to_move(g, idx);
+                        if bounded_idx > 0 {
+                            let parsed = crate::pgn::parse_pgn_games(&g.pgn);
+                            if let Some(first_g) = parsed.first() {
+                                if let Some(m) = first_g.moves.get(bounded_idx - 1) {
+                                    crate::audio::play_sound(crate::audio::sound_for_san(&m.san));
+                                }
+                            }
+                        }
+                        self.game_review_screen.update_board_to_move(g, bounded_idx);
                     }
                 }
                 Task::none()
@@ -453,12 +546,7 @@ impl App {
                 }
             }
             AppMessage::GameReview(GameReviewMessage::NextMove) => {
-                let max_moves = self
-                    .selected_game_id
-                    .and_then(|id| self.analyses.get(&id))
-                    .map(|an| an.moves.len())
-                    .unwrap_or(0);
-
+                let max_moves = self.current_game_total_moves();
                 if self.game_review_screen.current_move_idx < max_moves {
                     let next_idx = self.game_review_screen.current_move_idx + 1;
                     self.update(AppMessage::GameReview(GameReviewMessage::GoToMove(next_idx)))
@@ -470,11 +558,7 @@ impl App {
                 self.update(AppMessage::GameReview(GameReviewMessage::GoToMove(0)))
             }
             AppMessage::GameReview(GameReviewMessage::LastMove) => {
-                let max_moves = self
-                    .selected_game_id
-                    .and_then(|id| self.analyses.get(&id))
-                    .map(|an| an.moves.len())
-                    .unwrap_or(0);
+                let max_moves = self.current_game_total_moves();
                 self.update(AppMessage::GameReview(GameReviewMessage::GoToMove(max_moves)))
             }
             AppMessage::GameReview(GameReviewMessage::FlipBoard) => {

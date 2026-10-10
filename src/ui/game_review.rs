@@ -351,6 +351,17 @@ impl GameReviewScreen {
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
 
+        let keyboard_hint = text("Keys: ← Prev  •  → Next  •  Home / End (↑ / ↓)  •  F Flip")
+            .font(fonts::UI)
+            .size(type_scale::CAPTION)
+            .color(palette::TEXT_MUTED);
+
+        let nav_section = column![
+            nav_controls,
+            keyboard_hint,
+        ]
+        .spacing(spacing::XXS);
+
         // Move Evaluation Graph
         let eval_graph: Element<'a, GameReviewMessage> = match analysis {
             Some(an) if !an.moves.is_empty() => {
@@ -553,6 +564,83 @@ impl GameReviewScreen {
 
                 move_rows = move_rows.push(row_item);
             }
+        } else if let Some(g) = game {
+            let parsed = crate::pgn::parse_pgn_games(&g.pgn);
+            if let Some(first_g) = parsed.first() {
+                let num_moves = (first_g.moves.len() + 1) / 2;
+                for turn in 0..num_moves {
+                    let white_idx = turn * 2;
+                    let black_idx = turn * 2 + 1;
+
+                    let num_label = text(format!("{}.", turn + 1))
+                        .font(fonts::MONO)
+                        .size(type_scale::BODY)
+                        .color(palette::TEXT_MUTED)
+                        .width(Length::Fixed(32.0));
+
+                    let white_btn = if let Some(m) = first_g.moves.get(white_idx) {
+                        let is_active = self.current_move_idx == white_idx + 1;
+                        let label = m.san.clone();
+                        button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                            .padding([spacing::XXS, spacing::XS])
+                            .style(move |_theme, _status| {
+                                if is_active {
+                                    button::Style {
+                                        background: Some(palette::ACCENT.into()),
+                                        text_color: palette::TEXT_PRIMARY,
+                                        border: border::rounded(spacing::RADIUS),
+                                        ..Default::default()
+                                    }
+                                } else {
+                                    button::Style {
+                                        background: Some(Color::TRANSPARENT.into()),
+                                        text_color: palette::TEXT_PRIMARY,
+                                        ..Default::default()
+                                    }
+                                }
+                            })
+                            .on_press(GameReviewMessage::GoToMove(white_idx + 1))
+                    } else {
+                        button(text("").size(type_scale::BODY)).padding([spacing::XXS, spacing::XS])
+                    };
+
+                    let black_btn = if let Some(m) = first_g.moves.get(black_idx) {
+                        let is_active = self.current_move_idx == black_idx + 1;
+                        let label = m.san.clone();
+                        button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                            .padding([spacing::XXS, spacing::XS])
+                            .style(move |_theme, _status| {
+                                if is_active {
+                                    button::Style {
+                                        background: Some(palette::ACCENT.into()),
+                                        text_color: palette::TEXT_PRIMARY,
+                                        border: border::rounded(spacing::RADIUS),
+                                        ..Default::default()
+                                    }
+                                } else {
+                                    button::Style {
+                                        background: Some(Color::TRANSPARENT.into()),
+                                        text_color: palette::TEXT_PRIMARY,
+                                        ..Default::default()
+                                    }
+                                }
+                            })
+                            .on_press(GameReviewMessage::GoToMove(black_idx + 1))
+                    } else {
+                        button(text("").size(type_scale::BODY)).padding([spacing::XXS, spacing::XS])
+                    };
+
+                    let row_item = row![
+                        num_label,
+                        container(white_btn).width(Length::FillPortion(1)),
+                        container(black_btn).width(Length::FillPortion(1)),
+                    ]
+                    .align_y(Alignment::Center)
+                    .spacing(spacing::XXS);
+
+                    move_rows = move_rows.push(row_item);
+                }
+            }
         }
 
         let move_list_card = container(
@@ -568,7 +656,7 @@ impl GameReviewScreen {
             Space::with_height(spacing::XXS),
             accuracy_row,
             Space::with_height(spacing::XS),
-            nav_controls,
+            nav_section,
             Space::with_height(spacing::XS),
             eval_graph,
             Space::with_height(spacing::XS),

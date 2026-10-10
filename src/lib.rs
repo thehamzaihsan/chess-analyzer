@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod app;
+pub mod audio;
 pub mod chesscom;
 pub mod coach;
 pub mod db;

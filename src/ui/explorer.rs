@@ -62,7 +62,9 @@ impl ExplorerScreen {
                 let prev_pos = self.board_widget.position.clone();
                 let from = m.from().unwrap_or(Square::E2);
                 let to = m.to();
-                if let Ok(next_pos) = self.board_widget.position.clone().play(m) {
+                if let Ok(next_pos) = self.board_widget.position.clone().play(m.clone()) {
+                    let sound = crate::audio::sound_for_move(&m, &next_pos);
+                    crate::audio::play_sound(sound);
                     self.board_widget.position = next_pos;
                     self.board_widget.last_move = Some((from, to));
                     self.move_history.push((prev_pos, san_str.to_string()));
@@ -75,6 +77,7 @@ impl ExplorerScreen {
 
     pub fn undo(&mut self) {
         if let Some((pos, _)) = self.move_history.pop() {
+            crate::audio::play_sound(crate::audio::SoundType::Move);
             self.board_widget.position = pos;
             self.board_widget.last_move = None;
             self.update_opening();
@@ -82,6 +85,7 @@ impl ExplorerScreen {
     }
 
     pub fn reset(&mut self) {
+        crate::audio::play_sound(crate::audio::SoundType::GameStart);
         self.board_widget.position = Chess::default();
         self.board_widget.last_move = None;
         self.board_widget.selected_square = None;

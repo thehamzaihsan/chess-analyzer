@@ -85,13 +85,16 @@ impl PuzzleScreen {
                 let expected = self.puzzle_moves.get(self.current_move_step);
 
                 if expected == Some(&uci_str) {
-                    if let Ok(next_pos) = self.board_widget.position.clone().play(m) {
+                    if let Ok(next_pos) = self.board_widget.position.clone().play(m.clone()) {
+                        let sound = crate::audio::sound_for_move(&m, &next_pos);
+                        crate::audio::play_sound(sound);
                         self.board_widget.position = next_pos;
                         self.board_widget.last_move = Some((selected, sq));
                         self.board_widget.selected_square = None;
                         self.current_move_step += 1;
 
                         if self.current_move_step >= self.puzzle_moves.len() {
+                            crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                             self.is_solved = true;
                             self.puzzle_status = "Correct! Puzzle solved!".to_string();
                         } else {
@@ -100,7 +103,9 @@ impl PuzzleScreen {
                                     if let Ok(valid_opp) = opp_m.to_move(&self.board_widget.position) {
                                         let opp_from = valid_opp.from().unwrap_or(sq);
                                         let opp_to = valid_opp.to();
-                                        if let Ok(next_opp_pos) = self.board_widget.position.clone().play(valid_opp) {
+                                        if let Ok(next_opp_pos) = self.board_widget.position.clone().play(valid_opp.clone()) {
+                                            let opp_sound = crate::audio::sound_for_move(&valid_opp, &next_opp_pos);
+                                            crate::audio::play_sound(opp_sound);
                                             self.board_widget.position = next_opp_pos;
                                             self.board_widget.last_move = Some((opp_from, opp_to));
                                             self.current_move_step += 1;
