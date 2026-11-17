@@ -7,6 +7,8 @@ pub mod game_review;
 pub mod import;
 pub mod insights;
 pub mod puzzles;
+pub mod shell;
+pub mod shell_theme;
 pub mod theme;
 
 pub use board::{BoardMessage, BoardWidget};

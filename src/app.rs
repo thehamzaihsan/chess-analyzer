@@ -15,14 +15,9 @@ use crate::ui::import::{ImportMessage, ImportScreen};
 use crate::ui::charts::{ChartMessage, EvalGraphMessage};
 use crate::ui::insights::{InsightsMessage, InsightsScreen};
 use crate::ui::puzzles::{PuzzleMessage, PuzzleScreen};
-use crate::ui::theme::{
-    badge_container_style, fonts, base_container_style, custom_dark_theme, icon_book_open, icon_bot,
-    icon_folder_open, icon_insights, icon_logo, icon_puzzle, icon_search, icon_widget, nav_button_style,
-    palette, spacing, type_scale,
-};
-use iced::border;
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Alignment, Element, Length, Subscription, Task, Theme};
+use crate::ui::shell::{render_shell, ShellContext};
+use crate::ui::theme::custom_dark_theme;
+use iced::{Element, Subscription, Task, Theme};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -52,6 +47,7 @@ pub enum Tab {
 #[derive(Debug, Clone)]
 pub enum AppMessage {
     ChangeTab(Tab),
+    ToggleSidebar,
     Import(ImportMessage),
     GameReview(GameReviewMessage),
     Insights(InsightsMessage),
@@ -72,6 +68,7 @@ pub enum AppMessage {
 
 pub struct App {
     pub active_tab: Tab,
+    pub sidebar_collapsed: bool,
     pub player_username: String,
     pub db: Arc<Database>,
     pub chesscom: ChessComClient,
@@ -124,6 +121,7 @@ impl App {
 
         let mut app = Self {
             active_tab: Tab::Import,
+            sidebar_collapsed: false,
             player_username: default_username.clone(),
             db: Arc::clone(&db),
             chesscom: ChessComClient::new(),
@@ -296,6 +294,10 @@ impl App {
                         self.game_review_screen.load_game(first_game);
                     }
                 }
+                Task::none()
+            }
+            AppMessage::ToggleSidebar => {
+                self.sidebar_collapsed = !self.sidebar_collapsed;
                 Task::none()
             }
 
@@ -830,81 +832,70 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, AppMessage> {
-        let nav_btn = |tab: Tab, label: &'static str, icon_handle: iced::widget::svg::Handle| {
-            let is_selected = self.active_tab == tab;
-            let icon_color = if is_selected {
-                palette::TEXT_PRIMARY
-            } else {
-                palette::TEXT_SECONDARY
-            };
-
-            let content = row![
-                icon_widget(icon_handle, 16.0, Some(icon_color)),
-                text(label).font(fonts::UI_SEMIBOLD).size(type_scale::HEADING),
-            ]
-            .spacing(spacing::XS)
-            .align_y(Alignment::Center);
-
-            button(content)
-                .padding([spacing::XS, spacing::MD])
-                .style(nav_button_style(is_selected))
-                .on_press(AppMessage::ChangeTab(tab))
-        };
-
-        let app_title = row![
-            icon_widget(icon_logo(), 28.0, None),
-            Space::with_width(spacing::XS),
-            text("CHESS ANALYZER").font(fonts::UI_BOLD).size(type_scale::TITLE).color(palette::TEXT_PRIMARY),
-            Space::with_width(spacing::XS),
-            container(text("RUST").font(fonts::MONO_BOLD).size(type_scale::CAPTION).color(palette::ACCENT))
-                .padding([2.0, 6.0])
-                .style(badge_container_style(palette::ACCENT_MUTED)),
-        ]
-        .align_y(Alignment::Center);
-
-        let top_nav = row![
-            app_title,
-            Space::with_width(spacing::LG),
-            nav_btn(Tab::Import, "Import", icon_folder_open()),
-            nav_btn(Tab::GameReview, "Game Review", icon_search()),
-            nav_btn(Tab::Insights, "Insights", icon_insights()),
-            nav_btn(Tab::Puzzles, "Puzzles", icon_puzzle()),
-            nav_btn(Tab::Bots, "Play Bots", icon_bot()),
-            nav_btn(Tab::Explorer, "Explorer", icon_book_open()),
-        ]
-        .spacing(spacing::XS)
-        .padding([spacing::SM, spacing::LG])
-        .align_y(Alignment::Center);
-
-        let top_bar = container(top_nav)
-            .width(Length::Fill)
-            .style(|_theme| container::Style {
-                background: Some(palette::BG_SURFACE.into()),
-                border: border::rounded(0).color(palette::BORDER).width(1.0),
-                ..Default::default()
-            });
+        let current_game = self
+            .selected_game_id
+            .and_then(|id| self.games.iter().find(|g| g.id == id));
+        let current_analysis = self
+            .selected_game_id
+            .and_then(|id| self.analyses.get(&id));
 
         let main_view: Element<'_, AppMessage> = match self.active_tab {
             Tab::Import => self.import_screen.view(&self.games).map(AppMessage::Import),
-            Tab::GameReview => {
-                let current_game = self.selected_game_id.and_then(|id| self.games.iter().find(|g| g.id == id));
-                let current_analysis = self.selected_game_id.and_then(|id| self.analyses.get(&id));
-                self.game_review_screen
-                    .view(current_game, current_analysis)
-                    .map(AppMessage::GameReview)
-            }
-            Tab::Insights => self.insights_screen.view(&self.insights).map(AppMessage::Insights),
+            Tab::GameReview => self
+                .game_review_screen
+                .view(current_game, current_analysis)
+                .map(AppMessage::GameReview),
+            Tab::Insights => self
+                .insights_screen
+                .view(&self.insights)
+                .map(AppMessage::Insights),
             Tab::Puzzles => self.puzzle_screen.view().map(AppMessage::Puzzle),
             Tab::Bots => self.bot_screen.view().map(AppMessage::Bot),
             Tab::Explorer => self.explorer_screen.view().map(AppMessage::Explorer),
         };
 
-        column![
-            top_bar,
-            container(main_view).style(base_container_style),
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        let analyzed_count = self
+            .games
+            .iter()
+            .filter(|g| self.analyses.contains_key(&g.id))
+            .count();
+
+        let bot = self.bot_screen.current_bot();
+
+        let ctx = ShellContext {
+            active_tab: self.active_tab,
+            sidebar_collapsed: self.sidebar_collapsed,
+            player_username: &self.player_username,
+            games_count: self.games.len(),
+            analyzed_count,
+            engine_available: self.engine_pool.is_some(),
+            import_loading: self.import_screen.is_loading,
+            import_progress: if self.chesscom_fetch_total > 0 {
+                Some((self.chesscom_fetch_done, self.chesscom_fetch_total))
+            } else {
+                None
+            },
+            import_status: self.import_screen.status_message.as_deref(),
+            selected_game: current_game,
+            selected_game_accuracy: current_analysis
+                .map(|a| (a.white_accuracy, a.black_accuracy)),
+            insights_total_games: self.insights.total_games,
+            insights_win_rate: self.insights.win_rate,
+            puzzle_rating: self.puzzle_screen.current_puzzle.as_ref().map(|p| p.rating),
+            puzzle_source: self
+                .puzzle_screen
+                .current_puzzle
+                .as_ref()
+                .map(|p| p.source.as_str()),
+            puzzle_filter: self.puzzle_screen.filter.as_deref(),
+            bot_name: bot.name,
+            bot_elo: bot.elo,
+            bot_title: bot.title,
+            explorer_opening: &self.explorer_screen.current_opening,
+            explorer_eco: &self.explorer_screen.current_eco,
+            explorer_plies: self.explorer_screen.move_history.len(),
+        };
+
+        render_shell(ctx, main_view)
     }
 }
