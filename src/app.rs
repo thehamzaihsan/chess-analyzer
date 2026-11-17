@@ -1,4 +1,3 @@
-use shakmaty::Position;
 use crate::analysis::{analyze_game, GameAnalysis};
 use crate::chesscom::ChessComClient;
 use crate::coach::CoachClient;

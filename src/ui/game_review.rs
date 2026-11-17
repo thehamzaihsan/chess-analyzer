@@ -161,7 +161,7 @@ impl GameReviewScreen {
             (&black_player, &white_player)
         };
 
-        let eval_bar = self.render_eval_bar(analysis, 520.0);
+        let eval_bar = self.render_eval_bar(analysis);
 
         let board_column = render_unified_board_column(
             top_player,
@@ -186,7 +186,7 @@ impl GameReviewScreen {
         container(content).into()
     }
 
-    fn render_eval_bar<'a>(&'a self, analysis: Option<&'a GameAnalysis>, height: f32) -> Element<'a, GameReviewMessage> {
+    fn render_eval_bar<'a>(&'a self, analysis: Option<&'a GameAnalysis>) -> Element<'a, GameReviewMessage> {
         let (score_text, white_pct) = match analysis {
             Some(an) => {
                 let current_eval = if self.current_move_idx == 0 {
@@ -217,10 +217,14 @@ impl GameReviewScreen {
         };
 
         let bar_width = 34.0;
-        let white_height = (height * white_pct).clamp(0.0, height);
-        let black_height = height - white_height;
+        // Fill the board column's height and split it proportionally, so the
+        // bar tracks the responsive board instead of a fixed pixel height.
+        let white_portion = ((white_pct.clamp(0.0, 1.0) * 1000.0).round() as u16).max(1);
+        let black_portion = (1000u16.saturating_sub(white_portion)).max(1);
+        let flipped = self.board_widget.flipped;
 
-        let black_part = container(Space::new(Length::Fixed(bar_width), Length::Fixed(black_height)))
+        let black_part = container(Space::new(Length::Fixed(bar_width), Length::Fill))
+            .height(Length::FillPortion(black_portion))
             .style(|_theme| container::Style {
                 background: Some(palette::BG_SURFACE.into()),
                 ..Default::default()
@@ -228,26 +232,32 @@ impl GameReviewScreen {
 
         let white_color = Color::from_rgb8(218, 224, 233);
         let white_part = container(
-            container(
-                text(score_text)
-                    .font(fonts::MONO_BOLD)
-                    .size(type_scale::CAPTION)
-                    .color(palette::BG_BASE)
-            )
-            .padding(spacing::XXS)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::End)
+            text(score_text)
+                .font(fonts::MONO_BOLD)
+                .size(type_scale::CAPTION)
+                .color(palette::BG_BASE),
         )
+        .padding(spacing::XXS)
         .width(Length::Fixed(bar_width))
-        .height(Length::Fixed(white_height))
+        .height(Length::FillPortion(white_portion))
+        .align_x(Alignment::Center)
+        .align_y(if flipped { Alignment::Start } else { Alignment::End })
         .style(move |_theme| container::Style {
             background: Some(white_color.into()),
             ..Default::default()
         });
 
-        container(column![black_part, white_part])
+        // White's share sits on White's side of the board (bottom unless flipped).
+        let parts = if flipped {
+            column![white_part, black_part]
+        } else {
+            column![black_part, white_part]
+        };
+
+        container(parts)
             .width(Length::Fixed(bar_width))
-            .height(Length::Fixed(height))
+            .height(Length::Fill)
+            .clip(true)
             .style(|_theme| container::Style {
                 background: Some(palette::BG_SURFACE.into()),
                 border: border::rounded(spacing::RADIUS).color(palette::BORDER).width(1.0),
