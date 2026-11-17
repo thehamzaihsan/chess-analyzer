@@ -26,6 +26,7 @@ pub struct OpeningStat {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RatingPoint {
+    pub game_id: i64,
     pub date: String,
     pub elo: i32,
     pub result: String, // "win", "draw", "loss"
@@ -241,6 +242,7 @@ pub fn compute_insights(
 
         if let Some(elo) = my_elo {
             rating_history.push(RatingPoint {
+                game_id: game.id,
                 date: game.date.clone(),
                 elo,
                 result: res_str.to_string(),
@@ -556,3 +558,50 @@ pub fn compute_insights(
         takeaways,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rating_point_carries_unique_game_id() {
+        let g1 = StoredGame {
+            id: 101,
+            pgn: "1. e4 e5".to_string(),
+            white: "Hero".to_string(),
+            black: "Rival".to_string(),
+            white_elo: Some(1500),
+            black_elo: Some(1510),
+            result: "1-0".to_string(),
+            date: "2026.05.01".to_string(),
+            time_control: "180".to_string(),
+            eco: "C20".to_string(),
+            opening: "King's Pawn".to_string(),
+            accuracy_white: None,
+            accuracy_black: None,
+            analysis_json: None,
+        };
+        let g2 = StoredGame {
+            id: 202,
+            pgn: "1. d4 d5".to_string(),
+            white: "Hero".to_string(),
+            black: "Rival".to_string(),
+            white_elo: Some(1508),
+            black_elo: Some(1502),
+            result: "0-1".to_string(),
+            date: "2026.05.01".to_string(),
+            time_control: "180".to_string(),
+            eco: "D00".to_string(),
+            opening: "Queen's Pawn".to_string(),
+            accuracy_white: None,
+            accuracy_black: None,
+            analysis_json: None,
+        };
+
+        let insights = compute_insights("Hero", &[g1, g2], &[None, None]);
+        assert_eq!(insights.rating_history.len(), 2);
+        assert_eq!(insights.rating_history[0].game_id, 101);
+        assert_eq!(insights.rating_history[1].game_id, 202);
+    }
+}
+

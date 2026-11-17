@@ -264,7 +264,7 @@ impl InsightsScreen {
                     .font(fonts::UI_BOLD)
                     .size(type_scale::HEADING)
                     .color(palette::TEXT_PRIMARY),
-                text("Hover any point to inspect individual game result, opponent, and rating change.")
+                text("Hover any point to inspect game details, or click a point to open it in Game Review.")
                     .font(fonts::UI)
                     .size(type_scale::CAPTION)
                     .color(palette::TEXT_SECONDARY),

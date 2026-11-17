@@ -90,6 +90,13 @@ pub struct App {
     pub chesscom_fetch_total: usize,
     pub chesscom_fetch_done: usize,
 
+    pub analyzing_games: std::collections::HashSet<i64>,
+    pub batch_active: bool,
+    pub batch_queue: std::collections::VecDeque<i64>,
+    pub batch_total: usize,
+    pub batch_done: usize,
+    pub batch_errors: usize,
+
     // Sub-screens
     pub import_screen: ImportScreen,
     pub game_review_screen: GameReviewScreen,
@@ -139,6 +146,13 @@ impl App {
             chesscom_fetch_total: 0,
             chesscom_fetch_done: 0,
 
+            analyzing_games: std::collections::HashSet::new(),
+            batch_active: false,
+            batch_queue: std::collections::VecDeque::new(),
+            batch_total: 0,
+            batch_done: 0,
+            batch_errors: 0,
+
             import_screen: ImportScreen::new(),
             game_review_screen: GameReviewScreen::new(),
             insights_screen: InsightsScreen::new(),
@@ -147,7 +161,8 @@ impl App {
             explorer_screen: ExplorerScreen::new(),
         };
 
-        app.import_screen.username_input = default_username;
+        app.import_screen.username_input = default_username.clone();
+        app.import_screen.active_player_filter = Some(default_username);
 
         (app, Task::none())
     }
@@ -216,12 +231,7 @@ impl App {
             if let Some(an) = self.analyses.get(&id) {
                 return an.moves.len();
             }
-            if let Some(g) = self.games.iter().find(|g| g.id == id) {
-                return crate::pgn::parse_pgn_games(&g.pgn)
-                    .first()
-                    .map(|pg| pg.moves.len())
-                    .unwrap_or(0);
-            }
+            return self.game_review_screen.cached_moves.len();
         }
         0
     }
@@ -291,9 +301,11 @@ impl App {
                     if let Some(first_game) = self.games.first() {
                         let game_id = first_game.id;
                         self.selected_game_id = Some(game_id);
-                        self.game_review_screen.current_move_idx = 0;
-                        self.game_review_screen.coach_explanation = None;
                         self.game_review_screen.load_game(first_game);
+                        self.game_review_screen.is_analyzing = self.analyzing_games.contains(&game_id);
+                        if let Some(an) = self.analyses.get(&game_id) {
+                            self.game_review_screen.set_position_from_analysis(Some(an), 0);
+                        }
                     }
                 }
                 Task::none()
@@ -304,16 +316,69 @@ impl App {
                 self.import_screen.username_input = u;
                 Task::none()
             }
-            AppMessage::Import(ImportMessage::PgnInputChanged(p)) => {
-                self.import_screen.pgn_input = p;
+            AppMessage::Import(ImportMessage::PgnAction(action)) => {
+                self.import_screen.pgn_content.perform(action);
+                Task::none()
+            }
+            AppMessage::Import(ImportMessage::ClearPlayerFilter) => {
+                if self.import_screen.is_loading {
+                    return Task::none();
+                }
+                self.player_username.clear();
+                self.import_screen.active_player_filter = None;
+                self.import_screen.current_page = 0;
+                self.games = self.db.list_games().unwrap_or_default();
+                for g in &self.games {
+                    if !self.analyses.contains_key(&g.id) {
+                        if let Some(ref json) = g.analysis_json {
+                            if let Ok(an) = serde_json::from_str::<GameAnalysis>(json) {
+                                self.analyses.insert(g.id, an);
+                            }
+                        }
+                    }
+                }
+                self.recompute_insights();
                 Task::none()
             }
             AppMessage::Import(ImportMessage::FetchChessCom) => {
+                if self.import_screen.is_loading {
+                    return Task::none();
+                }
+                let username = self.import_screen.username_input.trim().to_string();
+                if username.is_empty() {
+                    self.import_screen.status_message =
+                        Some("Please enter a Chess.com username.".to_string());
+                    return Task::none();
+                }
+
+                self.pending_archives.clear();
+                self.chesscom_fetch_total = 0;
+                self.chesscom_fetch_done = 0;
                 self.import_screen.is_loading = true;
                 self.import_screen.current_page = 0;
-                let username = self.import_screen.username_input.trim().to_string();
                 self.player_username = username.clone();
-                self.import_screen.status_message = Some(format!("Looking up {}'s archive list...", username));
+                self.import_screen.active_player_filter = Some(username.clone());
+
+                let all_games = self.db.list_games().unwrap_or_default();
+                self.games = games_for_player(all_games, &self.player_username);
+                for g in &self.games {
+                    if !self.analyses.contains_key(&g.id) {
+                        if let Some(ref json) = g.analysis_json {
+                            if let Ok(an) = serde_json::from_str::<GameAnalysis>(json) {
+                                self.analyses.insert(g.id, an);
+                            }
+                        }
+                    }
+                }
+                if let Some(sel_id) = self.selected_game_id {
+                    if !self.games.iter().any(|g| g.id == sel_id) {
+                        self.selected_game_id = None;
+                    }
+                }
+                self.recompute_insights();
+
+                self.import_screen.status_message =
+                    Some(format!("Looking up {}'s archive list...", username));
                 let client = self.chesscom.clone();
 
                 Task::perform(
@@ -340,6 +405,7 @@ impl App {
             }
             AppMessage::ChessComArchivesListed(Err(e)) => {
                 self.import_screen.is_loading = false;
+                self.pending_archives.clear();
                 self.import_screen.status_message = Some(format!("Failed to fetch archives: {}", e));
                 Task::none()
             }
@@ -348,6 +414,15 @@ impl App {
                 match result {
                     Ok(games) => {
                         self.games = games;
+                        for g in &self.games {
+                            if !self.analyses.contains_key(&g.id) {
+                                if let Some(ref json) = g.analysis_json {
+                                    if let Ok(an) = serde_json::from_str::<GameAnalysis>(json) {
+                                        self.analyses.insert(g.id, an);
+                                    }
+                                }
+                            }
+                        }
                         self.recompute_insights();
                     }
                     Err(e) => {
@@ -361,7 +436,7 @@ impl App {
                 if self.pending_archives.is_empty() {
                     self.import_screen.is_loading = false;
                     self.import_screen.status_message = Some(format!(
-                        "Done — imported {} games across {} months for {}.",
+                        "Done — {} games loaded across {} months for {}.",
                         self.games.len(), self.chesscom_fetch_total, self.player_username
                     ));
                     Task::none()
@@ -370,17 +445,33 @@ impl App {
                 }
             }
             AppMessage::Import(ImportMessage::LoadPgnText) => {
+                let pgn_text = self.import_screen.pgn_content.text();
+                if pgn_text.trim().is_empty() {
+                    self.import_screen.status_message =
+                        Some("Please paste PGN text before importing.".to_string());
+                    return Task::none();
+                }
                 self.import_screen.current_page = 0;
-                let pgn_text = self.import_screen.pgn_input.clone();
                 let db = Arc::clone(&self.db);
 
                 Task::perform(
                     async move {
                         let parsed = parse_pgn_games(&pgn_text);
+                        let mut imported = Vec::new();
                         for g in &parsed {
-                            let _ = db.insert_parsed_game(g);
+                            if g.moves.is_empty() && g.white == "Unknown" && g.black == "Unknown" {
+                                continue;
+                            }
+                            if let Ok(id) = db.insert_parsed_game(g) {
+                                if let Ok(Some(stored)) = db.get_game(id) {
+                                    imported.push(stored);
+                                }
+                            }
                         }
-                        db.list_games().map_err(|e| e.to_string())
+                        if imported.is_empty() {
+                            return Err("No valid PGN games found in input.".to_string());
+                        }
+                        Ok(imported)
                     },
                     AppMessage::GamesImported,
                 )
@@ -403,44 +494,99 @@ impl App {
                             }
                         }
 
-                        let pgn_text = pgn_content.ok_or_else(|| "Sample PGN file not found in workspace root".to_string())?;
+                        let pgn_text = pgn_content
+                            .ok_or_else(|| "Sample PGN file not found in workspace root".to_string())?;
                         let parsed = parse_pgn_games(&pgn_text);
+                        let mut imported = Vec::new();
                         for g in &parsed {
-                            let _ = db.insert_parsed_game(g);
+                            if g.moves.is_empty() && g.white == "Unknown" && g.black == "Unknown" {
+                                continue;
+                            }
+                            if let Ok(id) = db.insert_parsed_game(g) {
+                                if let Ok(Some(stored)) = db.get_game(id) {
+                                    imported.push(stored);
+                                }
+                            }
                         }
-                        db.list_games().map_err(|e| e.to_string())
+                        if imported.is_empty() {
+                            return Err("No valid games found in sample PGN.".to_string());
+                        }
+                        Ok(imported)
                     },
                     AppMessage::GamesImported,
                 )
             }
             AppMessage::Import(ImportMessage::SelectGameForReview(game_id)) => {
                 self.selected_game_id = Some(game_id);
-                self.game_review_screen.current_move_idx = 0;
-                self.game_review_screen.coach_explanation = None;
-
                 if let Some(g) = self.games.iter().find(|g| g.id == game_id) {
                     self.game_review_screen.load_game(g);
                 }
-
+                self.game_review_screen.is_analyzing = self.analyzing_games.contains(&game_id);
+                if let Some(an) = self.analyses.get(&game_id) {
+                    self.game_review_screen.set_position_from_analysis(Some(an), 0);
+                }
                 self.active_tab = Tab::GameReview;
                 Task::none()
             }
             AppMessage::Import(ImportMessage::StartGameAnalysis(game_id)) => {
+                if self.analyzing_games.contains(&game_id)
+                    || !self.games.iter().any(|g| g.id == game_id)
+                {
+                    return Task::none();
+                }
+                self.analyzing_games.insert(game_id);
+                self.import_screen.analyzing_games.insert(game_id);
+                if self.selected_game_id == Some(game_id) {
+                    self.game_review_screen.is_analyzing = true;
+                    self.game_review_screen.analysis_error = None;
+                }
+                if !self.batch_active {
+                    self.import_screen.status_message = Some("Analyzing…".to_string());
+                }
                 self.analyze_single_game(game_id)
             }
             AppMessage::Import(ImportMessage::AnalyzeAllGames) => {
+                if self.batch_active {
+                    return Task::none();
+                }
                 let unanalyzed: Vec<i64> = self
                     .games
                     .iter()
-                    .filter(|g| !self.analyses.contains_key(&g.id))
+                    .filter(|g| {
+                        !self.analyses.contains_key(&g.id) && !self.analyzing_games.contains(&g.id)
+                    })
                     .map(|g| g.id)
                     .collect();
 
-                if let Some(first) = unanalyzed.first() {
-                    self.import_screen.status_message = Some(format!("Analyzing {} games in background...", unanalyzed.len()));
-                    self.analyze_single_game(*first)
+                if unanalyzed.is_empty() {
+                    self.import_screen.status_message = if self.analyzing_games.is_empty() {
+                        Some("All games already analyzed!".to_string())
+                    } else {
+                        Some("Analysis already in progress…".to_string())
+                    };
+                    return Task::none();
+                }
+
+                self.batch_active = true;
+                self.import_screen.is_batch_analyzing = true;
+                self.batch_total = unanalyzed.len();
+                self.batch_done = 0;
+                self.batch_errors = 0;
+                self.batch_queue = unanalyzed.into_iter().collect();
+
+                if let Some(first_id) = self.batch_queue.pop_front() {
+                    self.analyzing_games.insert(first_id);
+                    self.import_screen.analyzing_games.insert(first_id);
+                    if self.selected_game_id == Some(first_id) {
+                        self.game_review_screen.is_analyzing = true;
+                        self.game_review_screen.analysis_error = None;
+                    }
+                    self.import_screen.status_message =
+                        Some(format!("Analyzing 1 of {}…", self.batch_total));
+                    self.analyze_single_game(first_id)
                 } else {
-                    self.import_screen.status_message = Some("All games already analyzed!".to_string());
+                    self.batch_active = false;
+                    self.import_screen.is_batch_analyzing = false;
                     Task::none()
                 }
             }
@@ -454,15 +600,68 @@ impl App {
             }
 
             // --- Async Task Completion Handlers ---
-            AppMessage::GamesImported(Ok(games)) => {
-                self.import_screen.is_loading = false;
-                self.games = games_for_player(games, &self.player_username);
-                self.import_screen.status_message = Some(format!("Successfully imported {} total games.", self.games.len()));
+            AppMessage::GamesImported(Ok(imported_games)) => {
+                let imported_count = imported_games.len();
+                if imported_count == 0 {
+                    self.import_screen.status_message =
+                        Some("No valid PGN games found to import.".to_string());
+                    return Task::none();
+                }
+
+                if !self.import_screen.is_loading {
+                    let current_matches_all = !self.player_username.trim().is_empty()
+                        && imported_games.iter().all(|g| {
+                            g.white.eq_ignore_ascii_case(&self.player_username)
+                                || g.black.eq_ignore_ascii_case(&self.player_username)
+                        });
+
+                    if !current_matches_all {
+                        let inferred = crate::insights::detect_default_player(&imported_games)
+                            .filter(|p| {
+                                imported_count >= 2
+                                    && imported_games.iter().all(|g| {
+                                        g.white.eq_ignore_ascii_case(p)
+                                            || g.black.eq_ignore_ascii_case(p)
+                                    })
+                            });
+
+                        if let Some(player) = inferred {
+                            self.player_username = player.clone();
+                            self.import_screen.username_input = player.clone();
+                            self.import_screen.active_player_filter = Some(player);
+                        } else {
+                            self.player_username.clear();
+                            self.import_screen.active_player_filter = None;
+                        }
+                    }
+                }
+
+                let all_games = self.db.list_games().unwrap_or_default();
+                self.games = if self.player_username.trim().is_empty() {
+                    all_games
+                } else {
+                    games_for_player(all_games, &self.player_username)
+                };
+                for g in &self.games {
+                    if !self.analyses.contains_key(&g.id) {
+                        if let Some(ref json) = g.analysis_json {
+                            if let Ok(an) = serde_json::from_str::<GameAnalysis>(json) {
+                                self.analyses.insert(g.id, an);
+                            }
+                        }
+                    }
+                }
+
+                self.import_screen.status_message = Some(format!(
+                    "Imported {} game{} ({} shown).",
+                    imported_count,
+                    if imported_count == 1 { "" } else { "s" },
+                    self.games.len()
+                ));
                 self.recompute_insights();
                 Task::none()
             }
             AppMessage::GamesImported(Err(err)) => {
-                self.import_screen.is_loading = false;
                 self.import_screen.status_message = Some(format!("Import error: {}", err));
                 Task::none()
             }
@@ -470,30 +669,131 @@ impl App {
                 Task::none()
             }
             AppMessage::EngineGameAnalysisFinished(game_id, Ok(analysis)) => {
+                self.analyzing_games.remove(&game_id);
+                self.import_screen.analyzing_games.remove(&game_id);
+
+                if let Some(g) = self.games.iter_mut().find(|g| g.id == game_id) {
+                    g.accuracy_white = Some(analysis.white_accuracy);
+                    g.accuracy_black = Some(analysis.black_accuracy);
+                }
+
                 let _ = self.db.save_analysis(game_id, &analysis);
                 self.analyses.insert(game_id, analysis);
                 self.recompute_insights();
 
-                // Check if more games need analysis
-                let remaining: Vec<i64> = self
-                    .games
-                    .iter()
-                    .filter(|g| !self.analyses.contains_key(&g.id))
-                    .map(|g| g.id)
-                    .collect();
+                if self.selected_game_id == Some(game_id) {
+                    self.game_review_screen.is_analyzing = false;
+                    self.game_review_screen.analysis_error = None;
+                    let cur_idx = self.game_review_screen.current_move_idx;
+                    let an_ref = self.analyses.get(&game_id);
+                    self.game_review_screen.set_position_from_analysis(an_ref, cur_idx);
+                }
 
-                if let Some(next_id) = remaining.first() {
-                    self.analyze_single_game(*next_id)
+                if self.batch_active {
+                    self.batch_done += 1;
+                    let mut next_to_run = None;
+                    while let Some(candidate) = self.batch_queue.pop_front() {
+                        if !self.analyses.contains_key(&candidate)
+                            && !self.analyzing_games.contains(&candidate)
+                            && self.games.iter().any(|g| g.id == candidate)
+                        {
+                            next_to_run = Some(candidate);
+                            break;
+                        }
+                    }
+
+                    if let Some(next_id) = next_to_run {
+                        self.analyzing_games.insert(next_id);
+                        self.import_screen.analyzing_games.insert(next_id);
+                        if self.selected_game_id == Some(next_id) {
+                            self.game_review_screen.is_analyzing = true;
+                            self.game_review_screen.analysis_error = None;
+                        }
+                        let current_num = (self.batch_done + 1).min(self.batch_total);
+                        self.import_screen.status_message = Some(format!(
+                            "Analyzing {} of {}…",
+                            current_num, self.batch_total
+                        ));
+                        self.analyze_single_game(next_id)
+                    } else {
+                        self.batch_active = false;
+                        self.import_screen.is_batch_analyzing = false;
+                        if self.batch_errors > 0 {
+                            let succeeded = self.batch_done.saturating_sub(self.batch_errors);
+                            self.import_screen.status_message = Some(format!(
+                                "Batch complete: {} analyzed, {} failed.",
+                                succeeded, self.batch_errors
+                            ));
+                        } else {
+                            self.import_screen.status_message =
+                                Some("All game analyses complete!".to_string());
+                        }
+                        Task::none()
+                    }
                 } else {
-                    self.import_screen.status_message = Some("All game analyses complete!".to_string());
+                    if self.analyzing_games.is_empty() {
+                        self.import_screen.status_message =
+                            Some("Game analysis complete.".to_string());
+                    }
                     Task::none()
                 }
             }
-            AppMessage::EngineGameAnalysisFinished(_game_id, Err(err)) => {
-                self.import_screen.status_message = Some(format!("Analysis failed: {}", err));
-                Task::none()
+            AppMessage::EngineGameAnalysisFinished(game_id, Err(err)) => {
+                self.analyzing_games.remove(&game_id);
+                self.import_screen.analyzing_games.remove(&game_id);
+
+                if self.selected_game_id == Some(game_id) {
+                    self.game_review_screen.is_analyzing = false;
+                    self.game_review_screen.analysis_error =
+                        Some(format!("Analysis failed: {}", err));
+                }
+
+                if self.batch_active {
+                    self.batch_done += 1;
+                    self.batch_errors += 1;
+                    let mut next_to_run = None;
+                    while let Some(candidate) = self.batch_queue.pop_front() {
+                        if !self.analyses.contains_key(&candidate)
+                            && !self.analyzing_games.contains(&candidate)
+                            && self.games.iter().any(|g| g.id == candidate)
+                        {
+                            next_to_run = Some(candidate);
+                            break;
+                        }
+                    }
+
+                    if let Some(next_id) = next_to_run {
+                        self.analyzing_games.insert(next_id);
+                        self.import_screen.analyzing_games.insert(next_id);
+                        if self.selected_game_id == Some(next_id) {
+                            self.game_review_screen.is_analyzing = true;
+                            self.game_review_screen.analysis_error = None;
+                        }
+                        let current_num = (self.batch_done + 1).min(self.batch_total);
+                        self.import_screen.status_message = Some(format!(
+                            "Game #{} failed ({}); analyzing {} of {}…",
+                            game_id, err, current_num, self.batch_total
+                        ));
+                        self.analyze_single_game(next_id)
+                    } else {
+                        self.batch_active = false;
+                        self.import_screen.is_batch_analyzing = false;
+                        let succeeded = self.batch_done.saturating_sub(self.batch_errors);
+                        self.import_screen.status_message = Some(format!(
+                            "Batch finished with errors: {} analyzed, {} failed (last error: {}).",
+                            succeeded, self.batch_errors, err
+                        ));
+                        Task::none()
+                    }
+                } else {
+                    self.import_screen.status_message =
+                        Some(format!("Analysis failed for game #{}: {}", game_id, err));
+                    Task::none()
+                }
             }
             AppMessage::AllGamesAnalyzed => {
+                self.batch_active = false;
+                self.import_screen.is_batch_analyzing = false;
                 self.import_screen.status_message = Some("All games analyzed!".to_string());
                 Task::none()
             }
@@ -525,11 +825,8 @@ impl App {
                 } else if let Some(game_id) = self.selected_game_id {
                     if let Some(g) = self.games.iter().find(|g| g.id == game_id) {
                         if bounded_idx > 0 {
-                            let parsed = crate::pgn::parse_pgn_games(&g.pgn);
-                            if let Some(first_g) = parsed.first() {
-                                if let Some(m) = first_g.moves.get(bounded_idx - 1) {
-                                    crate::audio::play_sound(crate::audio::sound_for_san(&m.san));
-                                }
+                            if let Some(m) = self.game_review_screen.cached_moves.get(bounded_idx - 1) {
+                                crate::audio::play_sound(crate::audio::sound_for_san(&m.san));
                             }
                         }
                         self.game_review_screen.update_board_to_move(g, bounded_idx);
@@ -567,6 +864,15 @@ impl App {
             }
             AppMessage::GameReview(GameReviewMessage::AnalyzeCurrentGame) => {
                 if let Some(game_id) = self.selected_game_id {
+                    if self.analyzing_games.contains(&game_id)
+                        || !self.games.iter().any(|g| g.id == game_id)
+                    {
+                        return Task::none();
+                    }
+                    self.analyzing_games.insert(game_id);
+                    self.import_screen.analyzing_games.insert(game_id);
+                    self.game_review_screen.is_analyzing = true;
+                    self.game_review_screen.analysis_error = None;
                     self.analyze_single_game(game_id)
                 } else {
                     Task::none()
@@ -598,7 +904,7 @@ impl App {
                                         .explain_move(&fen, &played_san, &classification, loss, &best_line)
                                         .await
                                         .map_err(|e| e.to_string())
-                                                                },
+                                },
                                 AppMessage::CoachExplanationReceived,
                             );
                         }
@@ -621,7 +927,7 @@ impl App {
             AppMessage::CoachExplanationReceived(Err(err)) => {
                 self.game_review_screen.is_coach_loading = false;
                 self.game_review_screen.coach_explanation = Some(format!(
-                    "Packaged Gemma coach could not be reached: {err}. Please ensure `assets/coach/linux/llama-cli` and `assets/models/gemma/*.gguf` are present."
+                    "Packaged Gemma coach could not be reached: {err}. Please ensure the `llama-cli` runner binary under `assets/coach/` and model weights under `assets/models/gemma/*.gguf` are present."
                 ));
                 Task::none()
             }
@@ -636,12 +942,12 @@ impl App {
                 match cm {
                     ChartMessage::PointClicked(idx) => {
                         if let Some(pt) = self.insights.rating_history.get(idx) {
-                            if let Some(g) = self.games.iter().find(|g| {
-                                g.date == pt.date && (g.white == pt.opponent || g.black == pt.opponent)
-                            }) {
+                            if let Some(g) = self.games.iter().find(|g| g.id == pt.game_id) {
                                 let gid = g.id;
                                 self.selected_game_id = Some(gid);
                                 self.game_review_screen.load_game(g);
+                                self.game_review_screen.is_analyzing =
+                                    self.analyzing_games.contains(&gid);
                                 if let Some(an) = self.analyses.get(&gid) {
                                     self.game_review_screen.set_position_from_analysis(Some(an), 0);
                                 }

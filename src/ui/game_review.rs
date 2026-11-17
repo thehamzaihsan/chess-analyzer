@@ -37,6 +37,9 @@ pub struct GameReviewScreen {
     pub board_widget: BoardWidget,
     pub coach_explanation: Option<String>,
     pub is_coach_loading: bool,
+    pub cached_moves: Vec<crate::pgn::ParsedMove>,
+    pub is_analyzing: bool,
+    pub analysis_error: Option<String>,
 }
 
 impl GameReviewScreen {
@@ -46,36 +49,51 @@ impl GameReviewScreen {
             board_widget: BoardWidget::new(Chess::default()),
             coach_explanation: None,
             is_coach_loading: false,
+            cached_moves: Vec::new(),
+            is_analyzing: false,
+            analysis_error: None,
         }
     }
 
-    pub fn load_game(&mut self, _game: &StoredGame) {
+    pub fn load_game(&mut self, game: &StoredGame) {
         self.current_move_idx = 0;
         self.board_widget = BoardWidget::new(Chess::default());
         self.coach_explanation = None;
         self.is_coach_loading = false;
+        self.is_analyzing = false;
+        self.analysis_error = None;
+        self.cached_moves = crate::pgn::parse_pgn_games(&game.pgn)
+            .into_iter()
+            .next()
+            .map(|g| g.moves)
+            .unwrap_or_default();
     }
 
     pub fn update_board_to_move(&mut self, game: &StoredGame, idx: usize) {
         self.current_move_idx = idx;
         self.coach_explanation = None;
 
-        let parsed = crate::pgn::parse_pgn_games(&game.pgn);
+        if self.cached_moves.is_empty() && !game.pgn.trim().is_empty() {
+            self.cached_moves = crate::pgn::parse_pgn_games(&game.pgn)
+                .into_iter()
+                .next()
+                .map(|g| g.moves)
+                .unwrap_or_default();
+        }
+
         let mut pos = Chess::default();
         let mut last_m = None;
 
-        if let Some(first_g) = parsed.first() {
-            let target_moves = &first_g.moves[..idx.min(first_g.moves.len())];
-            for m in target_moves {
-                if let Ok(fen) = m.fen_after.parse::<shakmaty::fen::Fen>() {
-                    if let Ok(next_pos) = fen.into_position(shakmaty::CastlingMode::Standard) {
-                        pos = next_pos;
-                    }
+        let target_moves = &self.cached_moves[..idx.min(self.cached_moves.len())];
+        for m in target_moves {
+            if let Ok(fen) = m.fen_after.parse::<shakmaty::fen::Fen>() {
+                if let Ok(next_pos) = fen.into_position(shakmaty::CastlingMode::Standard) {
+                    pos = next_pos;
                 }
-                if let Ok(uci_m) = m.uci.parse::<shakmaty::uci::UciMove>() {
-                    if let shakmaty::uci::UciMove::Normal { from, to, .. } = uci_m {
-                        last_m = Some((from, to));
-                    }
+            }
+            if let Ok(uci_m) = m.uci.parse::<shakmaty::uci::UciMove>() {
+                if let shakmaty::uci::UciMove::Normal { from, to, .. } = uci_m {
+                    last_m = Some((from, to));
                 }
             }
         }
@@ -88,12 +106,12 @@ impl GameReviewScreen {
     pub fn set_position_from_analysis(&mut self, analysis: Option<&GameAnalysis>, ply: usize) {
         self.current_move_idx = ply;
         self.coach_explanation = None;
+        self.board_widget.last_move = None;
+        self.board_widget.best_move_arrow = None;
 
         if let Some(an) = analysis {
             if ply == 0 {
                 self.board_widget.position = Chess::default();
-                self.board_widget.last_move = None;
-                self.board_widget.best_move_arrow = None;
             } else if let Some(m) = an.moves.get(ply - 1) {
                 if let Ok(fen) = m.fen_after.parse::<shakmaty::fen::Fen>() {
                     if let Ok(pos) = fen.into_position(shakmaty::CastlingMode::Standard) {
@@ -106,7 +124,7 @@ impl GameReviewScreen {
                     }
                 }
 
-                if let Some(eval) = &m.eval_after {
+                if let Some(eval) = &m.eval_before {
                     if let Some(bm_str) = &eval.best_move {
                         if let Ok(bm) = bm_str.parse::<shakmaty::uci::UciMove>() {
                             if let shakmaty::uci::UciMove::Normal { from, to, .. } = bm {
@@ -303,19 +321,43 @@ impl GameReviewScreen {
                     .align_y(Alignment::Center)
                     .into()
             }
-            None => row![
-                text("Game not analyzed yet.")
-                    .font(fonts::UI)
-                    .size(type_scale::BODY)
-                    .color(palette::TEXT_MUTED),
-                Space::with_width(spacing::SM),
-                button(text("Analyze with Engine").font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                    .padding([spacing::XS, spacing::SM])
-                    .style(primary_button_style)
-                    .on_press(GameReviewMessage::AnalyzeCurrentGame),
-            ]
-            .align_y(Alignment::Center)
-            .into(),
+            None => {
+                let status_label = if self.is_analyzing {
+                    text("Analyzing…")
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .color(palette::ACCENT)
+                } else if let Some(err) = &self.analysis_error {
+                    text(err)
+                        .font(fonts::UI)
+                        .size(type_scale::BODY)
+                        .color(palette::DANGER)
+                } else {
+                    text("Game not analyzed yet.")
+                        .font(fonts::UI)
+                        .size(type_scale::BODY)
+                        .color(palette::TEXT_MUTED)
+                };
+
+                let btn_label = if self.is_analyzing {
+                    "Analyzing…"
+                } else {
+                    "Analyze with Engine"
+                };
+
+                let can_analyze = !self.is_analyzing && game.is_some();
+
+                row![
+                    status_label,
+                    Space::with_width(spacing::SM),
+                    button(text(btn_label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
+                        .padding([spacing::XS, spacing::SM])
+                        .style(primary_button_style)
+                        .on_press_maybe(if can_analyze { Some(GameReviewMessage::AnalyzeCurrentGame) } else { None }),
+                ]
+                .align_y(Alignment::Center)
+                .into()
+            }
         };
 
         // Navigation controls with Lucide SVG icons
@@ -564,82 +606,79 @@ impl GameReviewScreen {
 
                 move_rows = move_rows.push(row_item);
             }
-        } else if let Some(g) = game {
-            let parsed = crate::pgn::parse_pgn_games(&g.pgn);
-            if let Some(first_g) = parsed.first() {
-                let num_moves = (first_g.moves.len() + 1) / 2;
-                for turn in 0..num_moves {
-                    let white_idx = turn * 2;
-                    let black_idx = turn * 2 + 1;
+        } else if game.is_some() {
+            let num_moves = (self.cached_moves.len() + 1) / 2;
+            for turn in 0..num_moves {
+                let white_idx = turn * 2;
+                let black_idx = turn * 2 + 1;
 
-                    let num_label = text(format!("{}.", turn + 1))
-                        .font(fonts::MONO)
-                        .size(type_scale::BODY)
-                        .color(palette::TEXT_MUTED)
-                        .width(Length::Fixed(32.0));
+                let num_label = text(format!("{}.", turn + 1))
+                    .font(fonts::MONO)
+                    .size(type_scale::BODY)
+                    .color(palette::TEXT_MUTED)
+                    .width(Length::Fixed(32.0));
 
-                    let white_btn = if let Some(m) = first_g.moves.get(white_idx) {
-                        let is_active = self.current_move_idx == white_idx + 1;
-                        let label = m.san.clone();
-                        button(text(label).font(fonts::MONO).size(type_scale::BODY))
-                            .padding([spacing::XXS, spacing::XS])
-                            .style(move |_theme, _status| {
-                                if is_active {
-                                    button::Style {
-                                        background: Some(palette::ACCENT.into()),
-                                        text_color: palette::TEXT_PRIMARY,
-                                        border: border::rounded(spacing::RADIUS),
-                                        ..Default::default()
-                                    }
-                                } else {
-                                    button::Style {
-                                        background: Some(Color::TRANSPARENT.into()),
-                                        text_color: palette::TEXT_PRIMARY,
-                                        ..Default::default()
-                                    }
+                let white_btn = if let Some(m) = self.cached_moves.get(white_idx) {
+                    let is_active = self.current_move_idx == white_idx + 1;
+                    let label = m.san.clone();
+                    button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                        .padding([spacing::XXS, spacing::XS])
+                        .style(move |_theme, _status| {
+                            if is_active {
+                                button::Style {
+                                    background: Some(palette::ACCENT.into()),
+                                    text_color: palette::TEXT_PRIMARY,
+                                    border: border::rounded(spacing::RADIUS),
+                                    ..Default::default()
                                 }
-                            })
-                            .on_press(GameReviewMessage::GoToMove(white_idx + 1))
-                    } else {
-                        button(text("").size(type_scale::BODY)).padding([spacing::XXS, spacing::XS])
-                    };
-
-                    let black_btn = if let Some(m) = first_g.moves.get(black_idx) {
-                        let is_active = self.current_move_idx == black_idx + 1;
-                        let label = m.san.clone();
-                        button(text(label).font(fonts::MONO).size(type_scale::BODY))
-                            .padding([spacing::XXS, spacing::XS])
-                            .style(move |_theme, _status| {
-                                if is_active {
-                                    button::Style {
-                                        background: Some(palette::ACCENT.into()),
-                                        text_color: palette::TEXT_PRIMARY,
-                                        border: border::rounded(spacing::RADIUS),
-                                        ..Default::default()
-                                    }
-                                } else {
-                                    button::Style {
-                                        background: Some(Color::TRANSPARENT.into()),
-                                        text_color: palette::TEXT_PRIMARY,
-                                        ..Default::default()
-                                    }
+                            } else {
+                                button::Style {
+                                    background: Some(Color::TRANSPARENT.into()),
+                                    text_color: palette::TEXT_PRIMARY,
+                                    ..Default::default()
                                 }
-                            })
-                            .on_press(GameReviewMessage::GoToMove(black_idx + 1))
-                    } else {
-                        button(text("").size(type_scale::BODY)).padding([spacing::XXS, spacing::XS])
-                    };
+                            }
+                        })
+                        .on_press(GameReviewMessage::GoToMove(white_idx + 1))
+                } else {
+                    button(text("").size(type_scale::BODY)).padding([spacing::XXS, spacing::XS])
+                };
 
-                    let row_item = row![
-                        num_label,
-                        container(white_btn).width(Length::FillPortion(1)),
-                        container(black_btn).width(Length::FillPortion(1)),
-                    ]
-                    .align_y(Alignment::Center)
-                    .spacing(spacing::XXS);
+                let black_btn = if let Some(m) = self.cached_moves.get(black_idx) {
+                    let is_active = self.current_move_idx == black_idx + 1;
+                    let label = m.san.clone();
+                    button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                        .padding([spacing::XXS, spacing::XS])
+                        .style(move |_theme, _status| {
+                            if is_active {
+                                button::Style {
+                                    background: Some(palette::ACCENT.into()),
+                                    text_color: palette::TEXT_PRIMARY,
+                                    border: border::rounded(spacing::RADIUS),
+                                    ..Default::default()
+                                }
+                            } else {
+                                button::Style {
+                                    background: Some(Color::TRANSPARENT.into()),
+                                    text_color: palette::TEXT_PRIMARY,
+                                    ..Default::default()
+                                }
+                            }
+                        })
+                        .on_press(GameReviewMessage::GoToMove(black_idx + 1))
+                } else {
+                    button(text("").size(type_scale::BODY)).padding([spacing::XXS, spacing::XS])
+                };
 
-                    move_rows = move_rows.push(row_item);
-                }
+                let row_item = row![
+                    num_label,
+                    container(white_btn).width(Length::FillPortion(1)),
+                    container(black_btn).width(Length::FillPortion(1)),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(spacing::XXS);
+
+                move_rows = move_rows.push(row_item);
             }
         }
 
@@ -669,3 +708,151 @@ impl GameReviewScreen {
         .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::{AnalyzedMove, GameAnalysis, GamePhase, MoveClassification};
+    use crate::engine::UciEval;
+    use shakmaty::Square;
+
+    fn sample_stored_game(pgn: &str) -> StoredGame {
+        StoredGame {
+            id: 42,
+            pgn: pgn.to_string(),
+            white: "Alice".to_string(),
+            black: "Bob".to_string(),
+            white_elo: Some(1500),
+            black_elo: Some(1500),
+            result: "1-0".to_string(),
+            date: "2026.01.01".to_string(),
+            time_control: "600".to_string(),
+            eco: "C20".to_string(),
+            opening: "King's Pawn".to_string(),
+            accuracy_white: None,
+            accuracy_black: None,
+            analysis_json: None,
+        }
+    }
+
+    #[test]
+    fn test_load_game_caches_moves_and_resets_state() {
+        let mut screen = GameReviewScreen::new();
+        screen.current_move_idx = 3;
+        screen.coach_explanation = Some("Old explanation".to_string());
+        screen.analysis_error = Some("Old error".to_string());
+
+        let game = sample_stored_game("1. e4 e5 2. Nf3 Nc6");
+        screen.load_game(&game);
+
+        assert_eq!(screen.current_move_idx, 0);
+        assert!(screen.coach_explanation.is_none());
+        assert!(screen.analysis_error.is_none());
+        assert_eq!(screen.cached_moves.len(), 4);
+        assert_eq!(screen.cached_moves[0].san, "e4");
+        assert_eq!(screen.cached_moves[3].san, "Nc6");
+
+        // Navigating via update_board_to_move uses cached moves and updates last_move
+        screen.update_board_to_move(&game, 2);
+        assert_eq!(screen.current_move_idx, 2);
+        assert_eq!(screen.board_widget.last_move, Some((Square::E7, Square::E5)));
+        assert!(screen.board_widget.best_move_arrow.is_none());
+    }
+
+    #[test]
+    fn test_set_position_from_analysis_uses_eval_before_and_clears_stale_arrows() {
+        let mut screen = GameReviewScreen::new();
+        let parsed = crate::pgn::parse_pgn_games("1. e4 e5");
+        let m1 = &parsed[0].moves[0];
+        let m2 = &parsed[0].moves[1];
+
+        let analysis = GameAnalysis {
+            moves: vec![
+                AnalyzedMove {
+                    ply: 1,
+                    move_number: 1,
+                    is_white: true,
+                    san: m1.san.clone(),
+                    uci: m1.uci.clone(),
+                    fen_before: m1.fen_before.clone(),
+                    fen_after: m1.fen_after.clone(),
+                    eval_before: Some(UciEval {
+                        depth: 12,
+                        score_cp: Some(20),
+                        mate_in: None,
+                        best_move: Some("d2d4".to_string()),
+                        pv: vec![],
+                    }),
+                    eval_after: Some(UciEval {
+                        depth: 12,
+                        score_cp: Some(15),
+                        mate_in: None,
+                        best_move: Some("c7c5".to_string()),
+                        pv: vec![],
+                    }),
+                    win_prob_before: 52.0,
+                    win_prob_after: 51.0,
+                    win_prob_loss: 1.0,
+                    classification: MoveClassification::Best,
+                    phase: GamePhase::Opening,
+                    clock_seconds: None,
+                },
+                AnalyzedMove {
+                    ply: 2,
+                    move_number: 1,
+                    is_white: false,
+                    san: m2.san.clone(),
+                    uci: m2.uci.clone(),
+                    fen_before: m2.fen_before.clone(),
+                    fen_after: m2.fen_after.clone(),
+                    eval_before: None,
+                    eval_after: Some(UciEval {
+                        depth: 12,
+                        score_cp: Some(25),
+                        mate_in: None,
+                        best_move: Some("g1f3".to_string()),
+                        pv: vec![],
+                    }),
+                    win_prob_before: 51.0,
+                    win_prob_after: 52.0,
+                    win_prob_loss: 0.0,
+                    classification: MoveClassification::Book,
+                    phase: GamePhase::Opening,
+                    clock_seconds: None,
+                },
+            ],
+            white_accuracy: 95.0,
+            black_accuracy: 95.0,
+            white_blunders: 0,
+            black_blunders: 0,
+            white_mistakes: 0,
+            black_mistakes: 0,
+            white_inaccuracies: 0,
+            black_inaccuracies: 0,
+            opening_eco: "C20".to_string(),
+            opening_name: "King's Pawn".to_string(),
+            early_queen_white: false,
+            early_queen_black: false,
+            castled_white: None,
+            castled_black: None,
+        };
+
+        // Ply 1 must show eval_before.best_move (d2d4), NOT eval_after.best_move (c7c5)
+        screen.set_position_from_analysis(Some(&analysis), 1);
+        assert_eq!(screen.board_widget.last_move, Some((Square::E2, Square::E4)));
+        assert_eq!(screen.board_widget.best_move_arrow, Some((Square::D2, Square::D4)));
+
+        // Ply 2 has eval_before: None -> best_move_arrow must be cleared, not stale d2d4
+        screen.set_position_from_analysis(Some(&analysis), 2);
+        assert_eq!(screen.board_widget.last_move, Some((Square::E7, Square::E5)));
+        assert_eq!(screen.board_widget.best_move_arrow, None);
+
+        // Ply 0 clears both last_move and best_move_arrow
+        screen.set_position_from_analysis(Some(&analysis), 1);
+        assert!(screen.board_widget.best_move_arrow.is_some());
+        screen.set_position_from_analysis(Some(&analysis), 0);
+        assert_eq!(screen.board_widget.last_move, None);
+        assert_eq!(screen.board_widget.best_move_arrow, None);
+    }
+}
+
