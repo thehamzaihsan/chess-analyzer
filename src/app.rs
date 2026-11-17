@@ -67,7 +67,7 @@ pub enum AppMessage {
     EngineGameAnalysisFinished(i64, Result<GameAnalysis, String>),
     AllGamesAnalyzed,
     CoachExplanationReceived(Result<String, String>),
-    BotEngineMoveFound(String),
+    BotEngineMoveFound(u64, Result<String, String>),
 }
 
 pub struct App {
@@ -77,6 +77,7 @@ pub struct App {
     pub chesscom: ChessComClient,
     pub coach: Arc<CoachClient>,
     pub engine_pool: Option<Arc<EnginePool>>,
+    pub bot_engine: Arc<tokio::sync::Mutex<Option<(Option<u32>, UciEngine)>>>,
 
     pub games: Vec<StoredGame>,
     pub selected_game_id: Option<i64>,
@@ -112,6 +113,7 @@ impl App {
         let default_username = "GothamChess".to_string();
 
         let engine_pool = EnginePool::new((*db).clone()).ok().map(Arc::new);
+        let bot_engine = Arc::new(tokio::sync::Mutex::new(None));
 
         let coach = Arc::new(CoachClient::new(None, None));
 
@@ -136,6 +138,7 @@ impl App {
             chesscom: ChessComClient::new(),
             coach,
             engine_pool,
+            bot_engine,
 
             games: initial_games,
             selected_game_id: None,
@@ -969,24 +972,72 @@ impl App {
                 }
                 Task::none()
             }
+            AppMessage::Puzzle(PuzzleMessage::SelectPromotion(role)) => {
+                self.puzzle_screen.handle_promotion(role);
+                Task::none()
+            }
+            AppMessage::Puzzle(PuzzleMessage::CancelPromotion) => {
+                self.puzzle_screen.cancel_promotion();
+                Task::none()
+            }
+            AppMessage::Puzzle(PuzzleMessage::ShowHint) => {
+                self.puzzle_screen.show_hint();
+                Task::none()
+            }
+            AppMessage::Puzzle(PuzzleMessage::ShowSolution) => {
+                self.puzzle_screen.show_solution();
+                Task::none()
+            }
+            AppMessage::Puzzle(PuzzleMessage::ResetPuzzle) => {
+                self.puzzle_screen.reset_current_puzzle();
+                Task::none()
+            }
             AppMessage::Puzzle(PuzzleMessage::NextPuzzle) => {
                 if let Ok(Some(p)) = self.db.get_random_puzzle(self.puzzle_screen.filter.as_deref()) {
                     self.puzzle_screen.load_puzzle(p);
                 } else {
-                    self.puzzle_screen.puzzle_status = "No puzzles found in database for current filter.".to_string();
+                    self.puzzle_screen.puzzle_status =
+                        "No puzzles found in database for current filter.".to_string();
                 }
                 Task::none()
             }
             AppMessage::Puzzle(PuzzleMessage::MineBlunderPuzzles) => {
-                let mut mined = 0;
+                let mut mined = 0usize;
                 for (game_id, analysis) in &self.analyses {
                     for m in &analysis.moves {
                         if m.classification == crate::analysis::MoveClassification::Blunder {
-                            if let Some(best) = m.eval_before.as_ref().and_then(|e| e.best_move.clone()) {
+                            if let Some(best) =
+                                m.eval_before.as_ref().and_then(|e| e.best_move.clone())
+                            {
+                                let best_trimmed = best.trim();
+                                if best_trimmed.is_empty() || best_trimmed == "(none)" {
+                                    continue;
+                                }
+                                let is_legal = m
+                                    .fen_before
+                                    .parse::<shakmaty::fen::Fen>()
+                                    .ok()
+                                    .and_then(|f| {
+                                        f.into_position::<shakmaty::Chess>(
+                                            shakmaty::CastlingMode::Standard,
+                                        )
+                                        .ok()
+                                    })
+                                    .and_then(|pos| {
+                                        best_trimmed
+                                            .parse::<shakmaty::uci::UciMove>()
+                                            .ok()
+                                            .and_then(|u| u.to_move(&pos).ok())
+                                    })
+                                    .is_some();
+                                if !is_legal {
+                                    continue;
+                                }
+
                                 let p = Puzzle {
                                     id: format!("blunder_{}_{}", game_id, m.ply),
                                     fen: m.fen_before.clone(),
-                                    moves: best,
+                                    moves: best_trimmed.to_string(),
                                     rating: 1500,
                                     rating_deviation: 100,
                                     popularity: 100,
@@ -995,19 +1046,29 @@ impl App {
                                     opening_tags: "".to_string(),
                                     source: "blunder".to_string(),
                                 };
-                                let _ = self.db.insert_puzzle(&p);
-                                mined += 1;
+                                if let Ok(true) = self.db.insert_puzzle_if_new(&p) {
+                                    mined += 1;
+                                }
                             }
                         }
                     }
                 }
-                self.puzzle_screen.puzzle_status = format!("Mined {} blunder puzzles into database!", mined);
+                self.puzzle_screen.puzzle_status = if mined == 0 {
+                    "No new blunder puzzles mined (all valid blunders already in database)."
+                        .to_string()
+                } else {
+                    format!("Mined {} new blunder puzzles into database!", mined)
+                };
                 Task::none()
             }
             AppMessage::Puzzle(PuzzleMessage::SelectFilter(f)) => {
                 self.puzzle_screen.filter = f;
                 if let Ok(Some(p)) = self.db.get_random_puzzle(self.puzzle_screen.filter.as_deref()) {
                     self.puzzle_screen.load_puzzle(p);
+                } else {
+                    self.puzzle_screen.current_puzzle = None;
+                    self.puzzle_screen.puzzle_status =
+                        "No puzzles found in database for current filter.".to_string();
                 }
                 Task::none()
             }
@@ -1017,44 +1078,58 @@ impl App {
                 match bm {
                     BoardMessage::SquareClicked(sq) => {
                         if let Some(fen) = self.bot_screen.handle_square_clicked(sq) {
-                            // Player just made a move, trigger engine response for selected bot
-                            let bot = &BOTS[self.bot_screen.selected_bot_idx];
-                            let bot_elo = bot.elo;
-
-                            return Task::perform(
-                                async move {
-                                    if let Some(engine_path) = discover_engine_path("stockfish") {
-                                        if let Ok(mut engine) = UciEngine::spawn(&engine_path, &[]).await {
-                                            let _ = engine.configure_bot(bot_elo).await;
-                                            let best = engine.search_move(&fen, 600).await;
-                                            let _ = engine.quit().await;
-                                            return best.unwrap_or_else(|_| "e7e5".to_string());
-                                        }
-                                    }
-                                    "e7e5".to_string()
-                                },
-                                AppMessage::BotEngineMoveFound,
-                            );
+                            return self.spawn_bot_search(fen);
                         }
                     }
                 }
                 Task::none()
             }
+            AppMessage::Bot(BotMessage::SelectPromotion(role)) => {
+                if let Some(fen) = self.bot_screen.handle_promotion(role) {
+                    return self.spawn_bot_search(fen);
+                }
+                Task::none()
+            }
+            AppMessage::Bot(BotMessage::CancelPromotion) => {
+                self.bot_screen.cancel_promotion();
+                Task::none()
+            }
             AppMessage::Bot(BotMessage::SelectBot(idx)) => {
                 self.bot_screen.selected_bot_idx = idx;
-                self.bot_screen.reset_game();
+                if let Some(fen) = self.bot_screen.reset_game() {
+                    return self.spawn_bot_search(fen);
+                }
+                Task::none()
+            }
+            AppMessage::Bot(BotMessage::SelectColor(choice)) => {
+                self.bot_screen.color_choice = choice;
+                if let Some(fen) = self.bot_screen.reset_game() {
+                    return self.spawn_bot_search(fen);
+                }
                 Task::none()
             }
             AppMessage::Bot(BotMessage::NewGame) => {
-                self.bot_screen.reset_game();
+                if let Some(fen) = self.bot_screen.reset_game() {
+                    return self.spawn_bot_search(fen);
+                }
+                Task::none()
+            }
+            AppMessage::Bot(BotMessage::RetryBotMove) => {
+                if let Some(fen) = self.bot_screen.retry_bot_move() {
+                    return self.spawn_bot_search(fen);
+                }
+                Task::none()
+            }
+            AppMessage::Bot(BotMessage::PlayFallbackMove) => {
+                self.bot_screen.play_fallback_move();
                 Task::none()
             }
             AppMessage::Bot(BotMessage::EngineMoveMade(uci_str)) => {
                 self.bot_screen.apply_engine_move(&uci_str);
                 Task::none()
             }
-            AppMessage::BotEngineMoveFound(uci_str) => {
-                self.bot_screen.apply_engine_move(&uci_str);
+            AppMessage::BotEngineMoveFound(generation, result) => {
+                self.bot_screen.apply_engine_result(generation, result);
                 Task::none()
             }
 
@@ -1062,29 +1137,17 @@ impl App {
             AppMessage::Explorer(ExplorerMessage::Board(bm)) => {
                 match bm {
                     BoardMessage::SquareClicked(sq) => {
-                        if let Some(selected) = self.explorer_screen.board_widget.selected_square {
-                            let moves = self.explorer_screen.board_widget.position.legal_moves();
-                            for m in moves {
-                                if m.from() == Some(selected) && m.to() == sq {
-                                    let san = shakmaty::san::SanPlus::from_move(
-                                        self.explorer_screen.board_widget.position.clone(),
-                                        m,
-                                    )
-                                    .to_string();
-                                    self.explorer_screen.play_san(&san);
-                                    break;
-                                }
-                            }
-                            self.explorer_screen.board_widget.selected_square = None;
-                        } else {
-                            if self.explorer_screen.board_widget.position.board().color_at(sq)
-                                == Some(self.explorer_screen.board_widget.position.turn())
-                            {
-                                self.explorer_screen.board_widget.selected_square = Some(sq);
-                            }
-                        }
+                        self.explorer_screen.handle_square_clicked(sq);
                     }
                 }
+                Task::none()
+            }
+            AppMessage::Explorer(ExplorerMessage::SelectPromotion(role)) => {
+                self.explorer_screen.handle_promotion(role);
+                Task::none()
+            }
+            AppMessage::Explorer(ExplorerMessage::CancelPromotion) => {
+                self.explorer_screen.pending_promotion = None;
                 Task::none()
             }
             AppMessage::Explorer(ExplorerMessage::PlayMove(san)) => {
@@ -1099,7 +1162,55 @@ impl App {
                 self.explorer_screen.undo();
                 Task::none()
             }
+            AppMessage::Explorer(ExplorerMessage::RedoMove) => {
+                self.explorer_screen.redo();
+                Task::none()
+            }
+            AppMessage::Explorer(ExplorerMessage::JumpToMove(ply)) => {
+                self.explorer_screen.jump_to_move(ply);
+                Task::none()
+            }
         }
+    }
+
+    fn spawn_bot_search(&self, fen: String) -> Task<AppMessage> {
+        let bot_elo = BOTS[self.bot_screen.selected_bot_idx].elo;
+        let generation = self.bot_screen.game_generation;
+        let engine_lock = Arc::clone(&self.bot_engine);
+
+        Task::perform(
+            async move {
+                let mut guard = engine_lock.lock().await;
+                if guard.is_none() {
+                    let engine_path = discover_engine_path("stockfish").ok_or_else(|| {
+                        "Stockfish engine not found. Place binary in assets/stockfish or PATH."
+                            .to_string()
+                    })?;
+                    let engine = UciEngine::spawn(&engine_path, &[])
+                        .await
+                        .map_err(|e| format!("Failed to start Stockfish: {}", e))?;
+                    *guard = Some((None, engine));
+                }
+
+                let (configured_elo, engine) = guard.as_mut().unwrap();
+                if *configured_elo != Some(bot_elo) {
+                    if let Err(e) = engine.configure_bot(bot_elo).await {
+                        *guard = None;
+                        return Err(format!("Failed to configure bot: {}", e));
+                    }
+                    *configured_elo = Some(bot_elo);
+                }
+
+                match engine.search_move(&fen, 600).await {
+                    Ok(best_move) => Ok(best_move),
+                    Err(e) => {
+                        *guard = None;
+                        Err(format!("Engine search failed: {}", e))
+                    }
+                }
+            },
+            move |res| AppMessage::BotEngineMoveFound(generation, res),
+        )
     }
 
     fn analyze_single_game(&self, game_id: i64) -> Task<AppMessage> {

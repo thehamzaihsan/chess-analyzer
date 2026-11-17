@@ -354,18 +354,35 @@ impl Database {
         Ok(())
     }
 
+    /// Inserts a puzzle only if its `id` is not already present in the database.
+    /// Returns `Ok(true)` if a new row was inserted, `Ok(false)` if it already existed.
+    pub fn insert_puzzle_if_new(&self, puzzle: &Puzzle) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            r#"
+            INSERT OR IGNORE INTO puzzles (id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes, opening_tags, source)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+            params![
+                puzzle.id,
+                puzzle.fen,
+                puzzle.moves,
+                puzzle.rating,
+                puzzle.rating_deviation,
+                puzzle.popularity,
+                puzzle.nb_plays,
+                puzzle.themes,
+                puzzle.opening_tags,
+                puzzle.source
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
     pub fn get_random_puzzle(&self, source_filter: Option<&str>) -> Result<Option<Puzzle>> {
         let conn = self.conn.lock().unwrap();
-        let mut query = "SELECT id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes, opening_tags, source FROM puzzles".to_string();
-        if let Some(src) = source_filter {
-            query.push_str(&format!(" WHERE source = '{}'", src));
-        }
-        query.push_str(" ORDER BY RANDOM() LIMIT 1");
-
-        let mut stmt = conn.prepare(&query)?;
-        let mut rows = stmt.query([])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(Puzzle {
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Puzzle> {
+            Ok(Puzzle {
                 id: row.get(0)?,
                 fen: row.get(1)?,
                 moves: row.get(2)?,
@@ -376,9 +393,29 @@ impl Database {
                 themes: row.get(7)?,
                 opening_tags: row.get(8).unwrap_or_default(),
                 source: row.get(9)?,
-            }))
+            })
+        };
+
+        if let Some(src) = source_filter {
+            let mut stmt = conn.prepare(
+                "SELECT id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes, opening_tags, source FROM puzzles WHERE source = ?1 ORDER BY RANDOM() LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![src])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(map_row(row)?))
+            } else {
+                Ok(None)
+            }
         } else {
-            Ok(None)
+            let mut stmt = conn.prepare(
+                "SELECT id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes, opening_tags, source FROM puzzles ORDER BY RANDOM() LIMIT 1",
+            )?;
+            let mut rows = stmt.query([])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(map_row(row)?))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -415,5 +452,36 @@ impl Database {
         } else {
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_puzzle_if_new_reports_only_new_rows() {
+        let db = Database::memory().unwrap();
+        let puzzle = Puzzle {
+            id: "blunder_1_5".to_string(),
+            fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1".to_string(),
+            moves: "e7e5".to_string(),
+            rating: 1500,
+            rating_deviation: 100,
+            popularity: 100,
+            nb_plays: 1,
+            themes: "blunder-recovery".to_string(),
+            opening_tags: "".to_string(),
+            source: "blunder".to_string(),
+        };
+
+        assert!(db.insert_puzzle_if_new(&puzzle).unwrap());
+        // Duplicate deterministic id should not be counted as newly inserted
+        assert!(!db.insert_puzzle_if_new(&puzzle).unwrap());
+        assert_eq!(db.get_puzzle_count().unwrap(), (1, 1));
+
+        let fetched = db.get_random_puzzle(Some("blunder")).unwrap().unwrap();
+        assert_eq!(fetched.id, puzzle.id);
+        assert!(db.get_random_puzzle(Some("lichess")).unwrap().is_none());
     }
 }
