@@ -9,20 +9,20 @@ use shakmaty::{Chess, Color as PieceColor, File, Position, Rank, Role, Square};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-// Embedded Lichess cburnett pieces (CC BY-SA 3.0 Colin M.L. Burnett)
-const SVG_WK: &[u8] = include_bytes!("../../assets/pieces/cburnett/wK.svg");
-const SVG_WQ: &[u8] = include_bytes!("../../assets/pieces/cburnett/wQ.svg");
-const SVG_WR: &[u8] = include_bytes!("../../assets/pieces/cburnett/wR.svg");
-const SVG_WB: &[u8] = include_bytes!("../../assets/pieces/cburnett/wB.svg");
-const SVG_WN: &[u8] = include_bytes!("../../assets/pieces/cburnett/wN.svg");
-const SVG_WP: &[u8] = include_bytes!("../../assets/pieces/cburnett/wP.svg");
+// Embedded Lichess cardinal pieces (CC BY-NC-SA 4.0 sadsnake1)
+const SVG_WK: &[u8] = include_bytes!("../../assets/pieces/cardinal/wK.svg");
+const SVG_WQ: &[u8] = include_bytes!("../../assets/pieces/cardinal/wQ.svg");
+const SVG_WR: &[u8] = include_bytes!("../../assets/pieces/cardinal/wR.svg");
+const SVG_WB: &[u8] = include_bytes!("../../assets/pieces/cardinal/wB.svg");
+const SVG_WN: &[u8] = include_bytes!("../../assets/pieces/cardinal/wN.svg");
+const SVG_WP: &[u8] = include_bytes!("../../assets/pieces/cardinal/wP.svg");
 
-const SVG_BK: &[u8] = include_bytes!("../../assets/pieces/cburnett/bK.svg");
-const SVG_BQ: &[u8] = include_bytes!("../../assets/pieces/cburnett/bQ.svg");
-const SVG_BR: &[u8] = include_bytes!("../../assets/pieces/cburnett/bR.svg");
-const SVG_BB: &[u8] = include_bytes!("../../assets/pieces/cburnett/bB.svg");
-const SVG_BN: &[u8] = include_bytes!("../../assets/pieces/cburnett/bN.svg");
-const SVG_BP: &[u8] = include_bytes!("../../assets/pieces/cburnett/bP.svg");
+const SVG_BK: &[u8] = include_bytes!("../../assets/pieces/cardinal/bK.svg");
+const SVG_BQ: &[u8] = include_bytes!("../../assets/pieces/cardinal/bQ.svg");
+const SVG_BR: &[u8] = include_bytes!("../../assets/pieces/cardinal/bR.svg");
+const SVG_BB: &[u8] = include_bytes!("../../assets/pieces/cardinal/bB.svg");
+const SVG_BN: &[u8] = include_bytes!("../../assets/pieces/cardinal/bN.svg");
+const SVG_BP: &[u8] = include_bytes!("../../assets/pieces/cardinal/bP.svg");
 
 static PIECE_HANDLES: OnceLock<HashMap<(PieceColor, Role), Handle>> = OnceLock::new();
 
