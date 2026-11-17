@@ -1,12 +1,12 @@
 use crate::insights::OverallInsights;
 use crate::ui::charts::{ChartMessage, RatingChart};
 use crate::ui::theme::{
-    card_container_style, fonts, nav_button_style, palette, spacing, truncate, type_scale,
-    with_tooltip,
+    card_container_style, fonts, palette, segmented_button_style, segmented_container_style,
+    spacing, truncate, type_scale, with_tooltip,
 };
 use iced::border;
 use iced::widget::{
-    button, column, container, row, scrollable, text, tooltip, Space,
+    button, column, container, horizontal_rule, row, scrollable, text, tooltip, Space,
 };
 use iced::{Alignment, Element, Length};
 
@@ -38,23 +38,22 @@ impl InsightsScreen {
     }
 
     pub fn view<'a>(&'a self, insights: &'a OverallInsights) -> Element<'a, InsightsMessage> {
-        let title = text("Player Insights & Performance Dashboard")
-            .font(fonts::UI_BOLD)
-            .size(type_scale::TITLE)
-            .color(palette::TEXT_PRIMARY)
-            .wrapping(text::Wrapping::WordOrGlyph);
-
-        // Section tab buttons
+        // Segmented sub-nav control
         let tab_btn = |section: InsightsSection, label: &'static str| {
             let is_selected = self.current_section == section;
             button(
-                text(label)
-                    .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::HEADING)
-                    .wrapping(text::Wrapping::None),
+                container(
+                    text(label)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
+                )
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
             )
-            .padding([spacing::XS, spacing::MD])
-            .style(nav_button_style(is_selected))
+            .width(Length::FillPortion(1))
+            .padding([spacing::XS, spacing::SM])
+            .style(segmented_button_style(is_selected))
             .on_press(InsightsMessage::SelectSection(section))
         };
 
@@ -65,10 +64,13 @@ impl InsightsScreen {
                 tab_btn(InsightsSection::Openings, "Openings Performance"),
                 tab_btn(InsightsSection::WhenYouPlay, "When You Play & Habits"),
             ]
-            .spacing(spacing::XS),
+            .spacing(4.0)
+            .width(Length::Fill),
         )
+        .padding(4.0)
         .width(Length::Fill)
-        .clip(true);
+        .clip(true)
+        .style(segmented_container_style);
 
         let section_content: Element<'a, InsightsMessage> = match self.current_section {
             InsightsSection::Overview => self.render_overview(insights),
@@ -78,14 +80,12 @@ impl InsightsScreen {
         };
 
         let content = column![
-            title,
-            Space::with_height(spacing::XS),
             nav_tabs,
-            Space::with_height(spacing::MD),
+            Space::with_height(spacing::XS),
             section_content,
         ]
         .spacing(spacing::XS)
-        .padding(spacing::MD)
+        .padding([spacing::SM, spacing::MD])
         .width(Length::Fill)
         .height(Length::Fill);
 
@@ -213,14 +213,17 @@ impl InsightsScreen {
             .clip(true)
             .style(card_container_style);
 
-        column![
-            skills_row,
-            Space::with_height(spacing::MD),
-            record_card,
-            Space::with_height(spacing::MD),
-            takeaways_card,
-        ]
-        .width(Length::Fill)
+        scrollable(
+            column![
+                skills_row,
+                Space::with_height(spacing::MD),
+                record_card,
+                Space::with_height(spacing::MD),
+                takeaways_card,
+            ]
+            .width(Length::Fill),
+        )
+        .height(Length::Fill)
         .into()
     }
 
@@ -569,16 +572,17 @@ impl InsightsScreen {
 
         let header = row![
             text("Opening Name").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(5)),
-            text("Games").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(2)),
-            text("Win %").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(2)),
-            text("Score").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(3)),
+            text("Games").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(1)),
+            text("Win %").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(1)),
+            text("W / D / L").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(4)),
         ]
+        .spacing(spacing::SM)
         .padding([spacing::XS, spacing::SM])
         .width(Length::Fill);
 
         let mut opening_rows = column![].spacing(spacing::XXS).width(Length::Fill);
         for op in &insights.top_openings {
-            let short_op = truncate(&op.name, 42);
+            let short_op = truncate(&op.name, 40);
             let op_txt = text(short_op.clone())
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::BODY)
@@ -590,13 +594,28 @@ impl InsightsScreen {
                 op_txt.into()
             };
 
+            let wdl_bar = self.wdl_stacked_bar(op.wins, op.draws, op.losses);
+            let wdl_label = text(format!("+{} / ={} / -{}", op.wins, op.draws, op.losses))
+                .font(fonts::MONO)
+                .size(type_scale::CAPTION)
+                .color(palette::TEXT_SECONDARY)
+                .wrapping(text::Wrapping::None);
+            let wdl_cell = row![
+                container(wdl_bar).width(Length::FillPortion(1)).clip(true),
+                wdl_label,
+            ]
+            .spacing(spacing::XS)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+
             let row_item = container(
                 row![
                     container(op_el).width(Length::FillPortion(5)).clip(true),
-                    container(text(format!("{}", op.count)).font(fonts::MONO).size(type_scale::BODY).color(palette::TEXT_PRIMARY).wrapping(text::Wrapping::None)).width(Length::FillPortion(2)).clip(true),
-                    container(text(format!("{:.1}%", op.win_rate)).font(fonts::MONO_BOLD).size(type_scale::BODY).color(palette::SUCCESS).wrapping(text::Wrapping::None)).width(Length::FillPortion(2)).clip(true),
-                    container(text(format!("+{} / ={} / -{}", op.wins, op.draws, op.losses)).font(fonts::MONO).size(type_scale::BODY).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None)).width(Length::FillPortion(3)).clip(true),
+                    container(text(format!("{}", op.count)).font(fonts::MONO).size(type_scale::BODY).color(palette::TEXT_PRIMARY).wrapping(text::Wrapping::None)).width(Length::FillPortion(1)).clip(true),
+                    container(text(format!("{:.1}%", op.win_rate)).font(fonts::MONO_BOLD).size(type_scale::BODY).color(palette::SUCCESS).wrapping(text::Wrapping::None)).width(Length::FillPortion(1)).clip(true),
+                    container(wdl_cell).width(Length::FillPortion(4)).clip(true),
                 ]
+                .spacing(spacing::SM)
                 .align_y(Alignment::Center)
                 .padding([spacing::XS, spacing::SM])
                 .width(Length::Fill),
@@ -608,17 +627,79 @@ impl InsightsScreen {
             opening_rows = opening_rows.push(row_item);
         }
 
-        let scroll = scrollable(opening_rows).height(Length::Fixed(480.0));
+        let scroll = scrollable(opening_rows).height(Length::Fill);
 
         column![
             title,
-            Space::with_height(spacing::SM),
             header,
+            horizontal_rule(1),
             scroll,
         ]
         .spacing(spacing::XS)
         .width(Length::Fill)
+        .height(Length::Fill)
         .into()
+    }
+
+    fn wdl_stacked_bar<'a>(&'a self, wins: usize, draws: usize, losses: usize) -> Element<'a, InsightsMessage> {
+        let total = wins + draws + losses;
+        if total == 0 {
+            return container(Space::new(Length::Fill, Length::Fixed(8.0)))
+                .width(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(palette::BG_SURFACE.into()),
+                    border: border::rounded(4.0),
+                    ..Default::default()
+                })
+                .into();
+        }
+
+        let mut bar_row = row![].spacing(1.0).width(Length::Fill);
+        if wins > 0 {
+            bar_row = bar_row.push(
+                container(Space::new(Length::Fill, Length::Fixed(8.0)))
+                    .width(Length::FillPortion((wins as u16).max(1)))
+                    .style(|_| container::Style {
+                        background: Some(palette::SUCCESS.into()),
+                        ..Default::default()
+                    }),
+            );
+        }
+        if draws > 0 {
+            bar_row = bar_row.push(
+                container(Space::new(Length::Fill, Length::Fixed(8.0)))
+                    .width(Length::FillPortion((draws as u16).max(1)))
+                    .style(|_| container::Style {
+                        background: Some(palette::TEXT_MUTED.into()),
+                        ..Default::default()
+                    }),
+            );
+        }
+        if losses > 0 {
+            bar_row = bar_row.push(
+                container(Space::new(Length::Fill, Length::Fixed(8.0)))
+                    .width(Length::FillPortion((losses as u16).max(1)))
+                    .style(|_| container::Style {
+                        background: Some(palette::DANGER.into()),
+                        ..Default::default()
+                    }),
+            );
+        }
+
+        let bar_box = container(bar_row)
+            .width(Length::Fill)
+            .clip(true)
+            .style(|_| container::Style {
+                background: Some(palette::BG_SURFACE.into()),
+                border: border::rounded(4.0),
+                ..Default::default()
+            });
+
+        with_tooltip(
+            bar_box,
+            format!("Wins: {} · Draws: {} · Losses: {}", wins, draws, losses),
+            tooltip::Position::Top,
+        )
     }
 
     fn stat_box<'a>(&'a self, title: &'static str, val: &str) -> Element<'a, InsightsMessage> {

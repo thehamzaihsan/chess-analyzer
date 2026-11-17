@@ -10,10 +10,8 @@ pub const SIDEBAR_WIDTH_COLLAPSED: f32 = 64.0;
 pub const HEADER_HEIGHT: f32 = 54.0;
 pub const STATUS_BAR_HEIGHT: f32 = 28.0;
 
-// Max content widths & bounded scroll dimensions for screen containment
+// Max content width for non-board centered screens
 pub const MAX_CONTENT_WIDTH: f32 = 1320.0;
-pub const BOARD_CONTENT_MAX_WIDTH: f32 = 1020.0;
-pub const BOARD_CONTENT_MAX_HEIGHT: f32 = 700.0;
 
 pub const STATUS_BAR_BG: Color = Color::from_rgb(11.0 / 255.0, 13.0 / 255.0, 18.0 / 255.0); // #0b0d12
 pub const ACTIVE_NAV_BG: Color = Color::from_rgba(59.0 / 255.0, 130.0 / 255.0, 246.0 / 255.0, 0.14);

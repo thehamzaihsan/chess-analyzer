@@ -47,6 +47,7 @@ pub enum Tab {
 pub enum AppMessage {
     ChangeTab(Tab),
     ToggleSidebar,
+    WindowResized(iced::Size),
     Import(ImportMessage),
     GameReview(GameReviewMessage),
     Insights(InsightsMessage),
@@ -68,6 +69,7 @@ pub enum AppMessage {
 pub struct App {
     pub active_tab: Tab,
     pub sidebar_collapsed: bool,
+    pub window_size: iced::Size,
     pub player_username: String,
     pub db: Arc<Database>,
     pub chesscom: ChessComClient,
@@ -130,6 +132,7 @@ impl App {
         let mut app = Self {
             active_tab: Tab::Import,
             sidebar_collapsed: false,
+            window_size: iced::Size::new(1280.0, 840.0),
             player_username: default_username.clone(),
             db: Arc::clone(&db),
             chesscom: ChessComClient::new(),
@@ -174,7 +177,10 @@ impl App {
     pub fn subscription(&self) -> Subscription<AppMessage> {
         use iced::keyboard::{self, key::Named, Key};
 
-        match self.active_tab {
+        let resize_sub =
+            iced::window::resize_events().map(|(_id, size)| AppMessage::WindowResized(size));
+
+        let key_sub = match self.active_tab {
             Tab::GameReview => {
                 keyboard::on_key_press(|key, _modifiers| {
                     match key {
@@ -223,7 +229,9 @@ impl App {
                 })
             }
             _ => Subscription::none(),
-        }
+        };
+
+        Subscription::batch([resize_sub, key_sub])
     }
 
     pub fn current_game_total_moves(&self) -> usize {
@@ -323,6 +331,10 @@ impl App {
             }
             AppMessage::ToggleSidebar => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
+                Task::none()
+            }
+            AppMessage::WindowResized(size) => {
+                self.window_size = size;
                 Task::none()
             }
 
@@ -1204,6 +1216,11 @@ impl App {
                 self.explorer_screen.redo();
                 Task::none()
             }
+            AppMessage::Explorer(ExplorerMessage::FlipBoard) => {
+                self.explorer_screen.board_widget.flipped =
+                    !self.explorer_screen.board_widget.flipped;
+                Task::none()
+            }
             AppMessage::Explorer(ExplorerMessage::JumpToMove(ply)) => {
                 self.explorer_screen.jump_to_move(ply);
                 Task::none()
@@ -1388,6 +1405,11 @@ impl App {
             .selected_game_id
             .and_then(|id| self.analyses.get(&id));
 
+        let board_avail_size = crate::ui::shell::board_workspace_available_size(
+            self.window_size,
+            self.sidebar_collapsed,
+        );
+
         let main_view: Element<'_, AppMessage> = match self.active_tab {
             Tab::Import => self
                 .import_screen
@@ -1395,15 +1417,24 @@ impl App {
                 .map(AppMessage::Import),
             Tab::GameReview => self
                 .game_review_screen
-                .view(current_game, current_analysis)
+                .view(current_game, current_analysis, board_avail_size)
                 .map(AppMessage::GameReview),
             Tab::Insights => self
                 .insights_screen
                 .view(&self.insights)
                 .map(AppMessage::Insights),
-            Tab::Puzzles => self.puzzle_screen.view().map(AppMessage::Puzzle),
-            Tab::Bots => self.bot_screen.view().map(AppMessage::Bot),
-            Tab::Explorer => self.explorer_screen.view().map(AppMessage::Explorer),
+            Tab::Puzzles => self
+                .puzzle_screen
+                .view(board_avail_size)
+                .map(AppMessage::Puzzle),
+            Tab::Bots => self
+                .bot_screen
+                .view(board_avail_size)
+                .map(AppMessage::Bot),
+            Tab::Explorer => self
+                .explorer_screen
+                .view(board_avail_size)
+                .map(AppMessage::Explorer),
         };
 
         let analyzed_count = self

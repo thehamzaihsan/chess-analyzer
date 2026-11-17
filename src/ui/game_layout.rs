@@ -404,6 +404,169 @@ pub fn render_player_bar<'a, Message: 'a>(
     )
 }
 
+pub const EVAL_BAR_WIDTH: f32 = 34.0;
+pub const EVAL_BAR_GAP: f32 = 8.0;
+pub const WORKSPACE_PAD_X: f32 = spacing::SM;
+pub const WORKSPACE_PAD_Y: f32 = spacing::XS;
+pub const WORKSPACE_COL_GAP: f32 = spacing::MD;
+pub const PLAYER_BARS_RESERVED_H: f32 = 96.0;
+pub const SIDE_PANEL_MIN_W: f32 = 320.0;
+pub const SIDE_PANEL_MAX_W: f32 = 480.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoardLayoutMetrics {
+    pub board_side: f32,
+    pub eval_total_w: f32,
+    pub board_col_w: f32,
+    pub side_panel_w: f32,
+}
+
+/// Computes the largest square board size that fits within `avail` while guaranteeing
+/// the right side panel stays within `[SIDE_PANEL_MIN_W, SIDE_PANEL_MAX_W]`.
+pub fn compute_board_layout(avail: iced::Size, has_eval_bar: bool) -> BoardLayoutMetrics {
+    let inner_w = (avail.width - WORKSPACE_PAD_X * 2.0).max(400.0);
+    let inner_h = (avail.height - WORKSPACE_PAD_Y * 2.0).max(320.0);
+    let eval_total_w = if has_eval_bar {
+        EVAL_BAR_WIDTH + EVAL_BAR_GAP
+    } else {
+        0.0
+    };
+
+    let max_board_by_h = (inner_h - PLAYER_BARS_RESERVED_H).max(240.0);
+    let max_board_by_w =
+        (inner_w - WORKSPACE_COL_GAP - SIDE_PANEL_MIN_W - eval_total_w).max(240.0);
+    let board_side = max_board_by_h.min(max_board_by_w).floor().max(240.0);
+    let board_col_w = board_side + eval_total_w;
+    let side_panel_w = (inner_w - WORKSPACE_COL_GAP - board_col_w)
+        .clamp(SIDE_PANEL_MIN_W, SIDE_PANEL_MAX_W)
+        .floor();
+
+    BoardLayoutMetrics {
+        board_side,
+        eval_total_w,
+        board_col_w,
+        side_panel_w,
+    }
+}
+
+/// Renders the Chess.com-style Board Column with an exact square `board_side`, matching
+/// player bar widths (`board_side + eval_bar`), and matching eval bar height.
+pub fn render_sized_board_column<'a, Message: 'a>(
+    top_player: &PlayerInfo,
+    bottom_player: &PlayerInfo,
+    position: &Chess,
+    board_widget: &'a BoardWidget,
+    map_board_message: impl Fn(BoardMessage) -> Message + 'a,
+    eval_bar: Option<Element<'a, Message>>,
+    board_side: f32,
+) -> Element<'a, Message> {
+    let (captured_by_white, captured_by_black, white_advantage) = captured_pieces(position);
+
+    let (top_captured, top_captured_color, top_lead) = if board_widget.flipped {
+        (
+            &captured_by_white[..],
+            PieceColor::Black,
+            if white_advantage > 0 { Some(white_advantage) } else { None },
+        )
+    } else {
+        (
+            &captured_by_black[..],
+            PieceColor::White,
+            if white_advantage < 0 { Some(-white_advantage) } else { None },
+        )
+    };
+
+    let (bottom_captured, bottom_captured_color, bottom_lead) = if board_widget.flipped {
+        (
+            &captured_by_black[..],
+            PieceColor::White,
+            if white_advantage < 0 { Some(-white_advantage) } else { None },
+        )
+    } else {
+        (
+            &captured_by_white[..],
+            PieceColor::Black,
+            if white_advantage > 0 { Some(white_advantage) } else { None },
+        )
+    };
+
+    let eval_total_w = if eval_bar.is_some() {
+        EVAL_BAR_WIDTH + EVAL_BAR_GAP
+    } else {
+        0.0
+    };
+    let bar_width = board_side + eval_total_w;
+
+    let top_bar = render_player_bar(
+        top_player,
+        top_captured,
+        top_captured_color,
+        top_lead,
+        bar_width,
+    );
+    let bottom_bar = render_player_bar(
+        bottom_player,
+        bottom_captured,
+        bottom_captured_color,
+        bottom_lead,
+        bar_width,
+    );
+
+    let board_el = board_widget.view(board_side).map(map_board_message);
+
+    let board_row = if let Some(bar) = eval_bar {
+        let bar_box = container(bar)
+            .width(Length::Fixed(EVAL_BAR_WIDTH))
+            .height(Length::Fixed(board_side))
+            .clip(true);
+        row![bar_box, Space::with_width(EVAL_BAR_GAP), board_el]
+            .align_y(Alignment::Center)
+    } else {
+        row![board_el].align_y(Alignment::Center)
+    };
+
+    column![
+        top_bar,
+        Space::with_height(spacing::XS),
+        board_row,
+        Space::with_height(spacing::XS),
+        bottom_bar,
+    ]
+    .width(Length::Fixed(bar_width))
+    .align_x(Alignment::Start)
+    .into()
+}
+
+/// Places the sized board column alongside the right side panel, centered cleanly when extra
+/// horizontal room exceeds `SIDE_PANEL_MAX_W`.
+pub fn render_board_workspace<'a, Message: 'a>(
+    board_column: Element<'a, Message>,
+    side_panel: Element<'a, Message>,
+    metrics: BoardLayoutMetrics,
+) -> Element<'a, Message> {
+    let side_container = container(side_panel)
+        .width(Length::Fixed(metrics.side_panel_w))
+        .height(Length::Fill)
+        .clip(true);
+
+    let workspace = row![
+        board_column,
+        Space::with_width(WORKSPACE_COL_GAP),
+        side_container,
+    ]
+    .height(Length::Fill)
+    .align_y(Alignment::Center);
+
+    container(workspace)
+        .padding([WORKSPACE_PAD_Y, WORKSPACE_PAD_X])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .clip(true)
+        .into()
+}
+
 /// Renders the unified Chess.com Board Column:
 /// - Top player bar
 /// - Center: [Optional Eval Bar] + [Responsive Chess Board]
@@ -497,4 +660,40 @@ pub fn render_unified_board_column<'a, Message: 'a>(
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_board_layout_fits_1040x700_and_1280x840() {
+        // Minimum window 1040x700 minus expanded sidebar (~225) and header/status (~84) and shell pad (16)
+        let min_avail = iced::Size::new(799.0, 600.0);
+        let m_min = compute_board_layout(min_avail, true);
+        assert!(m_min.board_side >= 380.0);
+        assert!(m_min.side_panel_w >= SIDE_PANEL_MIN_W);
+        assert!(m_min.side_panel_w <= SIDE_PANEL_MAX_W);
+        assert!(
+            m_min.board_col_w + WORKSPACE_COL_GAP + m_min.side_panel_w + WORKSPACE_PAD_X * 2.0
+                <= min_avail.width + 0.1
+        );
+        assert!(
+            m_min.board_side + PLAYER_BARS_RESERVED_H + WORKSPACE_PAD_Y * 2.0 <= min_avail.height + 0.1
+        );
+
+        // Standard 1280x840 window expands board generously
+        let std_avail = iced::Size::new(1039.0, 740.0);
+        let m_std = compute_board_layout(std_avail, false);
+        assert!(m_std.board_side >= 600.0);
+        assert_eq!(m_std.board_col_w, m_std.board_side);
+        assert!(m_std.side_panel_w >= SIDE_PANEL_MIN_W);
+        assert!(m_std.side_panel_w <= SIDE_PANEL_MAX_W);
+
+        // Wide window caps side panel width at SIDE_PANEL_MAX_W
+        let wide_avail = iced::Size::new(1600.0, 900.0);
+        let m_wide = compute_board_layout(wide_avail, true);
+        assert_eq!(m_wide.side_panel_w, SIDE_PANEL_MAX_W);
+        assert_eq!(m_wide.board_col_w, m_wide.board_side + EVAL_BAR_WIDTH + EVAL_BAR_GAP);
+    }
 }

@@ -4,9 +4,9 @@ use crate::ui::shell_theme::{
     active_accent_bar_style, dot_style, header_container_style, pill_container_style,
     shell_scrollable_style, sidebar_container_style, sidebar_nav_button_style,
     sidebar_toggle_button_style, status_bar_container_style, subtle_rule_style,
-    tooltip_container_style, BOARD_CONTENT_MAX_HEIGHT, BOARD_CONTENT_MAX_WIDTH, HEADER_HEIGHT,
-    MAX_CONTENT_WIDTH, SIDEBAR_WIDTH_COLLAPSED, SIDEBAR_WIDTH_EXPANDED, STATUS_BAR_HEIGHT,
-    SUCCESS_PILL_BG, SUCCESS_PILL_BORDER, ACTIVE_NAV_BG, ACTIVE_NAV_BORDER,
+    tooltip_container_style, HEADER_HEIGHT, MAX_CONTENT_WIDTH, SIDEBAR_WIDTH_COLLAPSED,
+    SIDEBAR_WIDTH_EXPANDED, STATUS_BAR_HEIGHT, SUCCESS_PILL_BG, SUCCESS_PILL_BORDER,
+    ACTIVE_NAV_BG, ACTIVE_NAV_BORDER,
 };
 use crate::ui::theme::{
     base_container_style, fonts, icon_book_open, icon_bot, icon_chevrons_left,
@@ -42,6 +42,19 @@ pub struct ShellContext<'a> {
     pub explorer_opening: &'a str,
     pub explorer_eco: &'a str,
     pub explorer_plies: usize,
+}
+
+pub fn board_workspace_available_size(window_size: iced::Size, sidebar_collapsed: bool) -> iced::Size {
+    let sidebar_w = if sidebar_collapsed {
+        SIDEBAR_WIDTH_COLLAPSED
+    } else {
+        SIDEBAR_WIDTH_EXPANDED
+    } + 1.0;
+    let content_w = (window_size.width - sidebar_w - spacing::XS * 2.0).max(400.0);
+    let content_h =
+        (window_size.height - HEADER_HEIGHT - STATUS_BAR_HEIGHT - 2.0 - spacing::XS * 2.0)
+            .max(320.0);
+    iced::Size::new(content_w, content_h)
 }
 
 pub fn render_shell<'a>(
@@ -664,34 +677,14 @@ fn render_content_area<'a>(
                 .style(base_container_style)
                 .into()
         }
-        // Board-centric screens have fixed 520px boards and two-column layouts;
-        // give the inner workspace fixed target dimensions inside a bidirectional
-        // scrollable so smaller windows scroll cleanly rather than clipping,
-        // without violating Iced's rule against Length::Fill inside a scrollable.
-        Tab::GameReview | Tab::Puzzles | Tab::Bots | Tab::Explorer => {
-            let bounded = container(main_view)
-                .width(Length::Fixed(BOARD_CONTENT_MAX_WIDTH))
-                .height(Length::Fixed(BOARD_CONTENT_MAX_HEIGHT));
-
-            let padded = container(bounded).padding([spacing::XS, spacing::SM]);
-
-            let scroll_view = scrollable::Scrollable::with_direction(
-                padded,
-                scrollable::Direction::Both {
-                    vertical: scrollable::Scrollbar::new().width(6).scroller_width(6),
-                    horizontal: scrollable::Scrollbar::new().width(6).scroller_width(6),
-                },
-            )
+        // Board-centric screens size themselves responsively to fill all available space.
+        Tab::GameReview | Tab::Puzzles | Tab::Bots | Tab::Explorer => container(main_view)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(shell_scrollable_style);
-
-            container(scroll_view)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(base_container_style)
-                .into()
-        }
+            .padding([spacing::XS, spacing::XS])
+            .clip(true)
+            .style(base_container_style)
+            .into(),
     }
 }
 

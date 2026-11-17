@@ -236,6 +236,46 @@ pub fn nav_button_style(selected: bool) -> impl Fn(&Theme, button::Status) -> bu
     }
 }
 
+pub fn segmented_container_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(palette::BG_SURFACE.into()),
+        border: border::rounded(8.0)
+            .color(palette::BORDER_SUBTLE)
+            .width(1.0),
+        text_color: Some(palette::TEXT_PRIMARY),
+        ..Default::default()
+    }
+}
+
+pub fn segmented_button_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        if selected {
+            button::Style {
+                background: Some(palette::BG_ACTIVE.into()),
+                text_color: palette::TEXT_PRIMARY,
+                border: border::rounded(6.0).color(palette::ACCENT).width(1.0),
+                ..Default::default()
+            }
+        } else {
+            let bg = match status {
+                button::Status::Hovered => palette::BG_HOVER,
+                button::Status::Pressed => palette::BG_ELEVATED,
+                _ => Color::TRANSPARENT,
+            };
+            button::Style {
+                background: Some(bg.into()),
+                text_color: if status == button::Status::Hovered {
+                    palette::TEXT_PRIMARY
+                } else {
+                    palette::TEXT_SECONDARY
+                },
+                border: border::rounded(6.0).color(Color::TRANSPARENT).width(1.0),
+                ..Default::default()
+            }
+        }
+    }
+}
+
 pub fn card_container_style(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette::BG_ELEVATED.into()),
