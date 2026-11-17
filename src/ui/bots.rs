@@ -528,59 +528,84 @@ impl BotPlayScreen {
         let title = text("Play Human-Like Personality Bots")
             .font(fonts::UI_BOLD)
             .size(type_scale::TITLE)
-            .color(palette::TEXT_PRIMARY);
+            .color(palette::TEXT_PRIMARY)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Length::Fill);
 
         let subtitle = text("Practice against realistic calibrated opponents from Beginner to Master.")
             .font(fonts::UI)
             .size(type_scale::BODY)
-            .color(palette::TEXT_SECONDARY);
+            .color(palette::TEXT_SECONDARY)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Length::Fill);
 
         let make_color_btn = |choice: PlayerColorChoice, label: &'static str| {
             let is_sel = self.color_choice == choice;
-            button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                .padding([spacing::XS, spacing::SM])
-                .style(nav_button_style(is_sel))
-                .on_press(BotMessage::SelectColor(choice))
+            button(
+                text(label)
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::BODY)
+                    .wrapping(text::Wrapping::None),
+            )
+            .padding([spacing::XS, spacing::SM])
+            .style(nav_button_style(is_sel))
+            .on_press(BotMessage::SelectColor(choice))
         };
 
-        let color_row = row![
-            text("Play as:")
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY)
-                .color(palette::TEXT_SECONDARY),
-            make_color_btn(PlayerColorChoice::White, "White"),
-            make_color_btn(PlayerColorChoice::Black, "Black"),
-            make_color_btn(PlayerColorChoice::Random, "Random"),
-        ]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
+        let color_row = container(
+            row![
+                text("Play as:")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::BODY)
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None),
+                make_color_btn(PlayerColorChoice::White, "White"),
+                make_color_btn(PlayerColorChoice::Black, "Black"),
+                make_color_btn(PlayerColorChoice::Random, "Random"),
+            ]
+            .spacing(spacing::XS)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .clip(true);
 
-        let mut bot_cards = column![].spacing(spacing::XS);
+        let mut bot_cards = column![].spacing(spacing::XS).width(Length::Fill);
         for (i, bot) in BOTS.iter().enumerate() {
             let is_selected = self.selected_bot_idx == i;
             let elo_badge = text(format!("{} Elo", bot.elo))
                 .font(fonts::MONO_BOLD)
                 .size(type_scale::CAPTION)
-                .color(palette::ACCENT);
+                .color(palette::ACCENT)
+                .wrapping(text::Wrapping::None);
 
             let header = row![
-                text(bot.name)
-                    .font(fonts::UI_BOLD)
-                    .size(type_scale::HEADING)
-                    .color(if is_selected {
-                        palette::TEXT_PRIMARY
-                    } else {
-                        palette::TEXT_SECONDARY
-                    }),
+                container(
+                    row![
+                        text(bot.name)
+                            .font(fonts::UI_BOLD)
+                            .size(type_scale::HEADING)
+                            .color(if is_selected {
+                                palette::TEXT_PRIMARY
+                            } else {
+                                palette::TEXT_SECONDARY
+                            })
+                            .wrapping(text::Wrapping::None),
+                        Space::with_width(spacing::XS),
+                        text(format!("({})", bot.title))
+                            .font(fonts::UI)
+                            .size(type_scale::CAPTION)
+                            .color(palette::TEXT_MUTED)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .clip(true),
                 Space::with_width(spacing::XS),
-                text(format!("({})", bot.title))
-                    .font(fonts::UI)
-                    .size(type_scale::CAPTION)
-                    .color(palette::TEXT_MUTED),
-                Space::with_width(Length::Fill),
                 elo_badge,
             ]
-            .align_y(Alignment::Center);
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
             let card = button(
                 column![
@@ -589,9 +614,12 @@ impl BotPlayScreen {
                     text(bot.bio)
                         .font(fonts::UI)
                         .size(type_scale::BODY)
-                        .color(palette::TEXT_MUTED),
+                        .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill),
                 ]
-                .spacing(spacing::XXS),
+                .spacing(spacing::XXS)
+                .width(Length::Fill),
             )
             .padding(spacing::SM)
             .width(Length::Fill)
@@ -628,7 +656,8 @@ impl BotPlayScreen {
             icon_widget(icon_play(), 14.0, Some(palette::TEXT_PRIMARY)),
             text(new_game_label)
                 .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY),
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
@@ -643,7 +672,8 @@ impl BotPlayScreen {
                 icon_widget(icon_flag(), 14.0, Some(palette::TEXT_PRIMARY)),
                 text("Resign")
                     .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::BODY),
+                    .size(type_scale::BODY)
+                    .wrapping(text::Wrapping::None),
             ]
             .spacing(spacing::XS)
             .align_y(Alignment::Center),
@@ -665,11 +695,14 @@ impl BotPlayScreen {
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::HEADING)
                 .color(status_color)
-                .wrapping(text::Wrapping::WordOrGlyph)]
-            .align_y(Alignment::Center),
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .width(Length::Fill)]
+            .align_y(Alignment::Center)
+            .width(Length::Fill),
         )
         .padding(spacing::SM)
         .width(Length::Fill)
+        .clip(true)
         .style(card_container_style);
 
         let mut side_col = column![
@@ -681,7 +714,8 @@ impl BotPlayScreen {
             bot_cards,
             Space::with_height(spacing::SM),
         ]
-        .spacing(spacing::XS);
+        .spacing(spacing::XS)
+        .width(Length::Fill);
 
         if self.is_game_over {
             if let Some(ref outcome) = self.game_outcome {
@@ -694,21 +728,28 @@ impl BotPlayScreen {
             }
             let rematch_row = row![new_game_btn, status_box]
                 .spacing(spacing::SM)
-                .align_y(Alignment::Center);
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
             side_col = side_col.push(rematch_row);
         } else {
             let action_row = row![new_game_btn, resign_btn, status_box]
                 .spacing(spacing::SM)
-                .align_y(Alignment::Center);
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
             side_col = side_col.push(action_row);
         }
 
         if self.pending_promotion.is_some() {
             let promo_btn = |role: Role, label: &'static str| {
-                button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                    .padding([spacing::XS, spacing::SM])
-                    .style(primary_button_style)
-                    .on_press(BotMessage::SelectPromotion(role))
+                button(
+                    text(label)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([spacing::XS, spacing::SM])
+                .style(primary_button_style)
+                .on_press(BotMessage::SelectPromotion(role))
             };
 
             let promo_box = container(
@@ -722,17 +763,24 @@ impl BotPlayScreen {
                         promo_btn(Role::Rook, "Rook"),
                         promo_btn(Role::Bishop, "Bishop"),
                         promo_btn(Role::Knight, "Knight"),
-                        button(text("Cancel").font(fonts::UI).size(type_scale::BODY))
-                            .padding([spacing::XS, spacing::SM])
-                            .style(secondary_button_style)
-                            .on_press(BotMessage::CancelPromotion),
+                        button(
+                            text("Cancel")
+                                .font(fonts::UI)
+                                .size(type_scale::BODY)
+                                .wrapping(text::Wrapping::None)
+                        )
+                        .padding([spacing::XS, spacing::SM])
+                        .style(secondary_button_style)
+                        .on_press(BotMessage::CancelPromotion),
                     ]
                     .spacing(spacing::XS),
                 ]
-                .spacing(spacing::XS),
+                .spacing(spacing::XS)
+                .width(Length::Fill),
             )
             .padding(spacing::SM)
             .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
             side_col = side_col.push(Space::with_height(spacing::XS)).push(promo_box);
@@ -744,7 +792,8 @@ impl BotPlayScreen {
                     icon_widget(icon_refresh_cw(), 14.0, Some(palette::TEXT_PRIMARY)),
                     text("Retry Engine")
                         .font(fonts::UI_SEMIBOLD)
-                        .size(type_scale::BODY),
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(spacing::XS)
                 .align_y(Alignment::Center),
@@ -756,7 +805,8 @@ impl BotPlayScreen {
             let fallback_btn = button(
                 text("Play Random Legal Move")
                     .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::BODY),
+                    .size(type_scale::BODY)
+                    .wrapping(text::Wrapping::None),
             )
             .padding([spacing::XS, spacing::SM])
             .style(secondary_button_style)
@@ -769,12 +819,15 @@ impl BotPlayScreen {
             )
             .padding(spacing::SM)
             .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
             side_col = side_col.push(Space::with_height(spacing::XS)).push(recovery_box);
         }
 
-        let content = row![board_el, Space::with_width(spacing::LG), side_col,]
+        let side_panel = container(side_col).width(Length::Fill).clip(true);
+
+        let content = row![board_el, Space::with_width(spacing::LG), side_panel,]
             .padding(spacing::MD)
             .width(Length::Fill)
             .height(Length::Fill);

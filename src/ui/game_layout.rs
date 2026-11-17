@@ -1,10 +1,10 @@
 use crate::ui::board::{captured_pieces, captured_tray, BoardMessage, BoardWidget};
 use crate::ui::theme::{
     fonts, icon_flag, icon_handshake, icon_trophy, icon_widget, palette, spacing, truncate,
-    type_scale,
+    type_scale, with_tooltip,
 };
 use iced::border;
-use iced::widget::{column, container, row, text, Space};
+use iced::widget::{column, container, row, text, tooltip, Space};
 use iced::{Alignment, Color, Element, Length};
 use shakmaty::{Chess, Color as PieceColor, Role};
 
@@ -280,20 +280,29 @@ fn render_player_bar_with_width<'a, Message: 'a>(
         ..Default::default()
     });
 
+    let short_name = truncate(&player.name, 20);
+    let name_text = text(short_name.clone())
+        .font(fonts::UI_BOLD)
+        .size(type_scale::BODY)
+        .color(palette::TEXT_PRIMARY)
+        .wrapping(text::Wrapping::None);
+    let name_el: Element<'a, Message> = if short_name != player.name {
+        with_tooltip(name_text, &player.name, tooltip::Position::Top)
+    } else {
+        name_text.into()
+    };
+
     let mut info_row = row![
         avatar_circle,
         Space::with_width(spacing::XS),
-        text(truncate(&player.name, 20))
-            .font(fonts::UI_BOLD)
-            .size(type_scale::BODY)
-            .color(palette::TEXT_PRIMARY)
-            .wrapping(text::Wrapping::None),
+        name_el,
     ]
     .align_y(Alignment::Center);
 
     if let Some(ref title) = player.title {
+        let short_title = truncate(title, 12);
         let title_badge = container(
-            text(truncate(title, 12))
+            text(short_title.clone())
                 .font(fonts::MONO_BOLD)
                 .size(10.0)
                 .color(palette::TEXT_PRIMARY)
@@ -305,7 +314,12 @@ fn render_player_bar_with_width<'a, Message: 'a>(
             border: border::rounded(4.0),
             ..Default::default()
         });
-        info_row = info_row.push(Space::with_width(spacing::XXS)).push(title_badge);
+        let title_el: Element<'a, Message> = if short_title != *title {
+            with_tooltip(title_badge, title, tooltip::Position::Top)
+        } else {
+            title_badge.into()
+        };
+        info_row = info_row.push(Space::with_width(spacing::XXS)).push(title_el);
     }
 
     if let Some(rating) = player.rating {
@@ -328,12 +342,18 @@ fn render_player_bar_with_width<'a, Message: 'a>(
     }
 
     if let Some(ref status) = player.status {
-        let status_lbl = text(truncate(status, 18))
+        let short_status = truncate(status, 18);
+        let status_lbl = text(short_status.clone())
             .font(fonts::UI)
             .size(type_scale::CAPTION)
             .color(palette::TEXT_MUTED)
             .wrapping(text::Wrapping::None);
-        info_row = info_row.push(Space::with_width(spacing::XS)).push(status_lbl);
+        let status_el: Element<'a, Message> = if short_status != *status {
+            with_tooltip(status_lbl, status, tooltip::Position::Top)
+        } else {
+            status_lbl.into()
+        };
+        info_row = info_row.push(Space::with_width(spacing::XS)).push(status_el);
     }
 
     let tray = captured_tray(captured, captured_color, material_lead, 16.0);
@@ -349,7 +369,7 @@ fn render_player_bar_with_width<'a, Message: 'a>(
     let content = row![
         container(info_row).width(Length::Fill).clip(true),
         Space::with_width(spacing::XS),
-        right_row,
+        container(right_row).clip(true),
     ]
     .align_y(Alignment::Center)
     .width(Length::Fill);

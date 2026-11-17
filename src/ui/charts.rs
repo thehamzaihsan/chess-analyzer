@@ -323,13 +323,15 @@ impl Program<ChartMessage> for RatingChart {
                 // Tooltip box dimensions
                 let card_w = 170.0;
                 let card_h = 74.0;
-                let card_x = if pt.x + card_w + 15.0 <= bounds.width {
+                let preferred_x = if pt.x + card_w + 15.0 <= bounds.width {
                     pt.x + 12.0
                 } else {
                     pt.x - card_w - 12.0
                 };
+                let max_x = (bounds.width - card_w - 4.0).max(4.0);
+                let card_x = preferred_x.clamp(4.0, max_x);
                 let card_y = (pt.y - card_h / 2.0)
-                    .clamp(padding_top, bounds.height - padding_bottom - card_h);
+                    .clamp(padding_top, (bounds.height - padding_bottom - card_h).max(padding_top));
 
                 // Tooltip background
                 let tooltip_rect = Path::rectangle(Point::new(card_x, card_y), Size::new(card_w, card_h));
@@ -377,13 +379,14 @@ impl Program<ChartMessage> for RatingChart {
                 };
                 frame.fill_text(res_text);
 
-                let opp_str = if p.opponent.is_empty() {
+                let opp_raw = if p.opponent.is_empty() {
                     p.date.clone()
                 } else if let Some(elo) = p.opponent_elo {
                     format!("vs {} ({})", p.opponent, elo)
                 } else {
                     format!("vs {}", p.opponent)
                 };
+                let opp_str = crate::ui::theme::truncate(&opp_raw, 22);
 
                 let opp_text = Text {
                     content: opp_str,
@@ -398,7 +401,7 @@ impl Program<ChartMessage> for RatingChart {
                 frame.fill_text(opp_text);
 
                 let date_sub = Text {
-                    content: p.date.clone(),
+                    content: crate::ui::theme::truncate(&p.date, 22),
                     position: Point::new(card_x + 8.0, card_y + 50.0),
                     color: palette::TEXT_MUTED,
                     size: iced::Pixels(type_scale::CAPTION),

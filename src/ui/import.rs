@@ -2,12 +2,12 @@ use crate::db::StoredGame;
 use crate::ui::theme::{
     badge_container_style, card_container_style, fonts, icon_cpu, icon_download, icon_eye,
     icon_widget, palette, primary_button_style, secondary_button_style, spacing,
-    text_input_style, type_scale,
+    text_input_style, truncate, type_scale, with_tooltip,
 };
 use iced::border;
 use iced::keyboard::{key::Named, Key};
 use iced::widget::{
-    button, column, container, row, scrollable, text, text_editor, text_input, Space,
+    button, column, container, row, scrollable, text, text_editor, text_input, tooltip, Space,
 };
 use iced::{Alignment, Element, Length, Theme};
 use std::collections::HashSet;
@@ -77,12 +77,14 @@ impl ImportScreen {
         let title = text("Import Games & Archives")
             .font(fonts::UI_BOLD)
             .size(type_scale::TITLE)
-            .color(palette::TEXT_PRIMARY);
+            .color(palette::TEXT_PRIMARY)
+            .wrapping(text::Wrapping::WordOrGlyph);
 
         let user_label = text("Fetch from Chess.com Public API:")
             .font(fonts::UI_SEMIBOLD)
             .size(type_scale::HEADING)
-            .color(palette::TEXT_SECONDARY);
+            .color(palette::TEXT_SECONDARY)
+            .wrapping(text::Wrapping::WordOrGlyph);
 
         let user_input = text_input(
             "Enter Chess.com username (e.g. GothamChess)",
@@ -99,7 +101,8 @@ impl ImportScreen {
             icon_widget(icon_download(), 14.0, Some(palette::TEXT_PRIMARY)),
             text(if self.is_loading { "Fetching..." } else { "Fetch Archives" })
                 .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY),
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
@@ -113,6 +116,7 @@ impl ImportScreen {
             text("Load Sample PGN Archive")
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         )
         .padding([spacing::SM, spacing::MD])
         .style(secondary_button_style)
@@ -120,12 +124,14 @@ impl ImportScreen {
 
         let fetch_row = row![user_input, fetch_btn, sample_btn]
             .spacing(spacing::SM)
-            .align_y(Alignment::Center);
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
         let pgn_label = text("Or paste PGN text directly (multi-game PGN supported, Ctrl+Enter to import):")
             .font(fonts::UI_SEMIBOLD)
             .size(type_scale::HEADING)
-            .color(palette::TEXT_SECONDARY);
+            .color(palette::TEXT_SECONDARY)
+            .wrapping(text::Wrapping::WordOrGlyph);
 
         let pgn_editor = text_editor(&self.pgn_content)
             .placeholder("Paste single or multi-game PGN here...")
@@ -150,6 +156,7 @@ impl ImportScreen {
             text("Parse & Import")
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         )
         .padding([spacing::SM, spacing::MD])
         .style(primary_button_style)
@@ -157,7 +164,8 @@ impl ImportScreen {
 
         let pgn_row = row![pgn_editor, parse_btn]
             .spacing(spacing::SM)
-            .align_y(Alignment::End);
+            .align_y(Alignment::End)
+            .width(Length::Fill);
 
         let import_panel = container(
             column![
@@ -170,8 +178,11 @@ impl ImportScreen {
                 pgn_row,
             ]
             .spacing(spacing::XS)
+            .width(Length::Fill),
         )
         .padding(spacing::MD)
+        .width(Length::Fill)
+        .clip(true)
         .style(card_container_style);
 
         let status_view: Element<'a, ImportMessage> = match &self.status_message {
@@ -179,23 +190,40 @@ impl ImportScreen {
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::BODY)
                 .color(palette::ACCENT)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .width(Length::Fill)
                 .into(),
             None => Space::new(Length::Shrink, Length::Shrink).into(),
         };
 
         // Table header & player filter indicator
         let filter_controls: Element<'a, ImportMessage> = match &self.active_player_filter {
-            Some(player) => row![
-                container(
-                    text(format!("Player: {}", player))
-                        .font(fonts::MONO)
-                        .size(type_scale::CAPTION)
-                        .color(palette::TEXT_PRIMARY)
-                )
-                .padding([spacing::XXS, spacing::XS])
-                .style(badge_container_style(palette::ACCENT_MUTED)),
-                Space::with_width(spacing::XS),
-                button(text("Show All Games").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION))
+            Some(player) => {
+                let short_player = truncate(player, 20);
+                let player_txt = text(format!("Player: {}", short_player))
+                    .font(fonts::MONO)
+                    .size(type_scale::CAPTION)
+                    .color(palette::TEXT_PRIMARY)
+                    .wrapping(text::Wrapping::None);
+                let badge = container(player_txt)
+                    .padding([spacing::XXS, spacing::XS])
+                    .clip(true)
+                    .style(badge_container_style(palette::ACCENT_MUTED));
+                let badge_el: Element<'a, ImportMessage> = if short_player != *player {
+                    with_tooltip(badge, player, tooltip::Position::Bottom)
+                } else {
+                    badge.into()
+                };
+
+                row![
+                    badge_el,
+                    Space::with_width(spacing::XS),
+                    button(
+                        text("Show All Games")
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None)
+                    )
                     .padding([spacing::XXS, spacing::XS])
                     .style(secondary_button_style)
                     .on_press_maybe(if self.is_loading {
@@ -203,14 +231,16 @@ impl ImportScreen {
                     } else {
                         Some(ImportMessage::ClearPlayerFilter)
                     }),
-            ]
-            .align_y(Alignment::Center)
-            .into(),
+                ]
+                .align_y(Alignment::Center)
+                .into()
+            }
             None => container(
                 text("All Players")
                     .font(fonts::MONO)
                     .size(type_scale::CAPTION)
                     .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None),
             )
             .padding([spacing::XXS, spacing::XS])
             .style(badge_container_style(palette::BG_ELEVATED))
@@ -225,7 +255,10 @@ impl ImportScreen {
 
         let analyze_all_content = row![
             icon_widget(icon_cpu(), 14.0, Some(palette::TEXT_PRIMARY)),
-            text(analyze_all_label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+            text(analyze_all_label)
+                .font(fonts::UI_SEMIBOLD)
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
@@ -244,34 +277,71 @@ impl ImportScreen {
             text(format!("Stored Games ({})", games.len()))
                 .font(fonts::UI_BOLD)
                 .size(type_scale::HEADING)
-                .color(palette::TEXT_PRIMARY),
+                .color(palette::TEXT_PRIMARY)
+                .wrapping(text::Wrapping::None),
             Space::with_width(spacing::SM),
             filter_controls,
             Space::with_width(Length::Fill),
             analyze_all_btn,
         ]
-        .align_y(Alignment::Center);
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
 
         let header_row = row![
-            text("White").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).width(Length::FillPortion(3)),
-            text("Black").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).width(Length::FillPortion(3)),
-            text("Result").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).width(Length::FillPortion(1)),
-            text("Opening").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).width(Length::FillPortion(4)),
-            text("Date").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).width(Length::FillPortion(2)),
-            text("Accuracy").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).width(Length::FillPortion(2)),
-            text("Actions").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).width(Length::FillPortion(3)),
+            text("White").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(3)),
+            text("Black").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(3)),
+            text("Result").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(1)),
+            text("Opening").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(4)),
+            text("Date").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(2)),
+            text("Accuracy").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(2)),
+            text("Actions").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None).width(Length::FillPortion(3)),
         ]
         .spacing(spacing::SM)
-        .padding([spacing::XS, spacing::SM]);
+        .padding([spacing::XS, spacing::SM])
+        .width(Length::Fill);
 
         let total_pages = games.len().div_ceil(GAMES_PER_PAGE).max(1);
         let current_page = self.current_page.min(total_pages - 1);
         let page_start = current_page * GAMES_PER_PAGE;
 
-        let mut games_list = column![].spacing(spacing::XXS);
+        let mut games_list = column![].spacing(spacing::XXS).width(Length::Fill);
         for game in games.iter().skip(page_start).take(GAMES_PER_PAGE) {
-            let white_str = format!("{} ({})", game.white, game.white_elo.unwrap_or(0));
-            let black_str = format!("{} ({})", game.black, game.black_elo.unwrap_or(0));
+            let white_full = format!("{} ({})", game.white, game.white_elo.unwrap_or(0));
+            let black_full = format!("{} ({})", game.black, game.black_elo.unwrap_or(0));
+            let white_short = truncate(&white_full, 22);
+            let black_short = truncate(&black_full, 22);
+            let opening_short = truncate(&game.opening, 32);
+
+            let white_el: Element<'a, ImportMessage> = if white_short != white_full {
+                with_tooltip(
+                    text(white_short).font(fonts::UI_SEMIBOLD).size(type_scale::BODY).color(palette::TEXT_PRIMARY).wrapping(text::Wrapping::None),
+                    white_full,
+                    tooltip::Position::Top,
+                )
+            } else {
+                text(white_short).font(fonts::UI_SEMIBOLD).size(type_scale::BODY).color(palette::TEXT_PRIMARY).wrapping(text::Wrapping::None).into()
+            };
+
+            let black_el: Element<'a, ImportMessage> = if black_short != black_full {
+                with_tooltip(
+                    text(black_short).font(fonts::UI_SEMIBOLD).size(type_scale::BODY).color(palette::TEXT_PRIMARY).wrapping(text::Wrapping::None),
+                    black_full,
+                    tooltip::Position::Top,
+                )
+            } else {
+                text(black_short).font(fonts::UI_SEMIBOLD).size(type_scale::BODY).color(palette::TEXT_PRIMARY).wrapping(text::Wrapping::None).into()
+            };
+
+            let opening_el: Element<'a, ImportMessage> = if opening_short != game.opening {
+                with_tooltip(
+                    text(opening_short).font(fonts::UI).size(type_scale::BODY).color(palette::TEXT_SECONDARY).wrapping(text::Wrapping::None),
+                    &game.opening,
+                    tooltip::Position::Top,
+                )
+            } else {
+                text(opening_short).font(fonts::UI).size(type_scale::BODY).color(palette::TEXT_SECONDARY).wrapping(text::Wrapping::None).into()
+            };
+
             let acc_str = match (game.accuracy_white, game.accuracy_black) {
                 (Some(w), Some(b)) => format!("{:.0}% / {:.0}%", w, b),
                 _ => "—".to_string(),
@@ -280,7 +350,7 @@ impl ImportScreen {
             let game_id = game.id;
             let review_content = row![
                 icon_widget(icon_eye(), 13.0, Some(palette::TEXT_PRIMARY)),
-                text("Review").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+                text("Review").font(fonts::UI_SEMIBOLD).size(type_scale::BODY).wrapping(text::Wrapping::None),
             ]
             .spacing(spacing::XXS)
             .align_y(Alignment::Center);
@@ -295,7 +365,8 @@ impl ImportScreen {
                 icon_widget(icon_cpu(), 13.0, Some(palette::TEXT_PRIMARY)),
                 text(if is_analyzing { "Analyzing…" } else { "Analyze" })
                     .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::BODY),
+                    .size(type_scale::BODY)
+                    .wrapping(text::Wrapping::None),
             ]
             .spacing(spacing::XXS)
             .align_y(Alignment::Center);
@@ -311,19 +382,21 @@ impl ImportScreen {
 
             let row_item = container(
                 row![
-                    text(white_str).font(fonts::UI_SEMIBOLD).size(type_scale::BODY).color(palette::TEXT_PRIMARY).width(Length::FillPortion(3)),
-                    text(black_str).font(fonts::UI_SEMIBOLD).size(type_scale::BODY).color(palette::TEXT_PRIMARY).width(Length::FillPortion(3)),
-                    text(&game.result).font(fonts::MONO_BOLD).size(type_scale::BODY).color(palette::TEXT_SECONDARY).width(Length::FillPortion(1)),
-                    text(&game.opening).font(fonts::UI).size(type_scale::BODY).color(palette::TEXT_SECONDARY).width(Length::FillPortion(4)),
-                    text(&game.date).font(fonts::MONO).size(type_scale::BODY).color(palette::TEXT_MUTED).width(Length::FillPortion(2)),
-                    text(acc_str).font(fonts::MONO_BOLD).size(type_scale::BODY).color(palette::SUCCESS).width(Length::FillPortion(2)),
-                    row![review_btn, analyze_btn].spacing(spacing::XS).width(Length::FillPortion(3)),
+                    container(white_el).width(Length::FillPortion(3)).clip(true),
+                    container(black_el).width(Length::FillPortion(3)).clip(true),
+                    container(text(&game.result).font(fonts::MONO_BOLD).size(type_scale::BODY).color(palette::TEXT_SECONDARY).wrapping(text::Wrapping::None)).width(Length::FillPortion(1)).clip(true),
+                    container(opening_el).width(Length::FillPortion(4)).clip(true),
+                    container(text(&game.date).font(fonts::MONO).size(type_scale::BODY).color(palette::TEXT_MUTED).wrapping(text::Wrapping::None)).width(Length::FillPortion(2)).clip(true),
+                    container(text(acc_str).font(fonts::MONO_BOLD).size(type_scale::BODY).color(palette::SUCCESS).wrapping(text::Wrapping::None)).width(Length::FillPortion(2)).clip(true),
+                    container(row![review_btn, analyze_btn].spacing(spacing::XS)).width(Length::FillPortion(3)).clip(true),
                 ]
                 .spacing(spacing::SM)
                 .align_y(Alignment::Center)
                 .padding([spacing::XS, spacing::SM])
+                .width(Length::Fill),
             )
             .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
             games_list = games_list.push(row_item);
@@ -332,7 +405,7 @@ impl ImportScreen {
         let scrollable_table = scrollable(games_list).height(Length::Fill);
 
         let pagination_row = row![
-            button(text("< Prev").font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
+            button(text("< Prev").font(fonts::UI_SEMIBOLD).size(type_scale::BODY).wrapping(text::Wrapping::None))
                 .padding([spacing::XXS, spacing::SM])
                 .style(secondary_button_style)
                 .on_press_maybe(if current_page > 0 { Some(ImportMessage::PrevPage) } else { None }),
@@ -340,9 +413,10 @@ impl ImportScreen {
             text(format!("Page {} of {}", current_page + 1, total_pages))
                 .font(fonts::MONO)
                 .size(type_scale::BODY)
-                .color(palette::TEXT_SECONDARY),
+                .color(palette::TEXT_SECONDARY)
+                .wrapping(text::Wrapping::None),
             Space::with_width(spacing::SM),
-            button(text("Next >").font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
+            button(text("Next >").font(fonts::UI_SEMIBOLD).size(type_scale::BODY).wrapping(text::Wrapping::None))
                 .padding([spacing::XXS, spacing::SM])
                 .style(secondary_button_style)
                 .on_press_maybe(if current_page + 1 < total_pages { Some(ImportMessage::NextPage) } else { None }),
@@ -363,11 +437,14 @@ impl ImportScreen {
             pagination_row,
         ]
         .spacing(spacing::XS)
-        .padding(spacing::MD);
+        .padding(spacing::MD)
+        .width(Length::Fill)
+        .height(Length::Fill);
 
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
+            .clip(true)
             .into()
     }
 }

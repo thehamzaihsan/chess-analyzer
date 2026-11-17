@@ -395,32 +395,45 @@ impl PuzzleScreen {
         let title = text("Tactics & Puzzle Trainer")
             .font(fonts::UI_BOLD)
             .size(type_scale::TITLE)
-            .color(palette::TEXT_PRIMARY);
+            .color(palette::TEXT_PRIMARY)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Length::Fill);
 
         let make_filter_btn = |filter_opt: Option<String>, label: &'static str| {
             let is_sel = self.filter == filter_opt;
-            button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                .padding([spacing::XS, spacing::SM])
-                .style(nav_button_style(is_sel))
-                .on_press(PuzzleMessage::SelectFilter(filter_opt))
+            button(
+                text(label)
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::BODY)
+                    .wrapping(text::Wrapping::None),
+            )
+            .padding([spacing::XS, spacing::SM])
+            .style(nav_button_style(is_sel))
+            .on_press(PuzzleMessage::SelectFilter(filter_opt))
         };
 
-        let filter_row = row![
-            text("Filter:")
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY)
-                .color(palette::TEXT_SECONDARY),
-            make_filter_btn(None, "All Puzzles"),
-            make_filter_btn(Some("blunder".to_string()), "My Blunders"),
-            make_filter_btn(Some("lichess".to_string()), "Lichess Puzzles"),
-        ]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
+        let filter_row = container(
+            row![
+                text("Filter:")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::BODY)
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None),
+                make_filter_btn(None, "All Puzzles"),
+                make_filter_btn(Some("blunder".to_string()), "My Blunders"),
+                make_filter_btn(Some("lichess".to_string()), "Lichess Puzzles"),
+            ]
+            .spacing(spacing::XS)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .clip(true);
 
         let next_btn_content = row![
             text("Next Puzzle")
                 .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY),
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
             icon_widget(icon_chevron_right(), 14.0, Some(palette::TEXT_PRIMARY)),
         ]
         .spacing(spacing::XS)
@@ -435,7 +448,8 @@ impl PuzzleScreen {
             icon_widget(icon_sparkles(), 14.0, Some(palette::TEXT_PRIMARY)),
             text("Mine Puzzles from Blunders")
                 .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY),
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
@@ -445,7 +459,9 @@ impl PuzzleScreen {
             .style(secondary_button_style)
             .on_press(PuzzleMessage::MineBlunderPuzzles);
 
-        let action_row = row![next_btn, mine_btn].spacing(spacing::SM);
+        let action_row = container(row![next_btn, mine_btn].spacing(spacing::SM))
+            .width(Length::Fill)
+            .clip(true);
 
         let (status_icon, status_color) = if self.is_solved {
             (Some(icon_check()), palette::SUCCESS)
@@ -463,21 +479,26 @@ impl PuzzleScreen {
                     .font(fonts::UI_SEMIBOLD)
                     .size(type_scale::HEADING)
                     .color(status_color)
-                    .wrapping(text::Wrapping::WordOrGlyph),
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .width(Length::Fill),
             ]
             .align_y(Alignment::Center)
+            .width(Length::Fill)
         } else {
             row![text(&self.puzzle_status)
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::HEADING)
                 .color(status_color)
-                .wrapping(text::Wrapping::WordOrGlyph)]
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .width(Length::Fill)]
             .align_y(Alignment::Center)
+            .width(Length::Fill)
         };
 
         let status_box = container(status_row)
             .padding(spacing::SM)
             .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
         let outcome_banner: Option<Element<'a, PuzzleMessage>> = if self.is_solved {
@@ -509,7 +530,8 @@ impl PuzzleScreen {
             action_row,
             Space::with_height(spacing::SM),
         ]
-        .spacing(spacing::XS);
+        .spacing(spacing::XS)
+        .width(Length::Fill);
 
         if let Some(banner) = outcome_banner {
             side_col = side_col.push(banner);
@@ -521,7 +543,10 @@ impl PuzzleScreen {
             let hint_btn = button(
                 row![
                     icon_widget(icon_sparkles(), 14.0, Some(palette::TEXT_PRIMARY)),
-                    text("Hint").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+                    text("Hint")
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(spacing::XS)
                 .align_y(Alignment::Center),
@@ -535,7 +560,8 @@ impl PuzzleScreen {
                     icon_widget(icon_eye(), 14.0, Some(palette::TEXT_PRIMARY)),
                     text("Show Solution")
                         .font(fonts::UI_SEMIBOLD)
-                        .size(type_scale::BODY),
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(spacing::XS)
                 .align_y(Alignment::Center),
@@ -549,7 +575,8 @@ impl PuzzleScreen {
                     icon_widget(icon_refresh_cw(), 14.0, Some(palette::TEXT_PRIMARY)),
                     text("Reset Puzzle")
                         .font(fonts::UI_SEMIBOLD)
-                        .size(type_scale::BODY),
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(spacing::XS)
                 .align_y(Alignment::Center),
@@ -558,9 +585,13 @@ impl PuzzleScreen {
             .style(secondary_button_style)
             .on_press(PuzzleMessage::ResetPuzzle);
 
-            let helper_row = row![hint_btn, solution_btn, reset_btn]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center);
+            let helper_row = container(
+                row![hint_btn, solution_btn, reset_btn]
+                    .spacing(spacing::SM)
+                    .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .clip(true);
 
             side_col = side_col.push(Space::with_height(spacing::XS)).push(helper_row);
         }
@@ -575,12 +606,16 @@ impl PuzzleScreen {
                     text(solution_line)
                         .font(fonts::MONO_BOLD)
                         .size(type_scale::BODY)
-                        .color(palette::ACCENT),
+                        .color(palette::ACCENT)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill),
                 ]
-                .spacing(spacing::XXS),
+                .spacing(spacing::XXS)
+                .width(Length::Fill),
             )
             .padding(spacing::SM)
             .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
             side_col = side_col.push(Space::with_height(spacing::XS)).push(sol_box);
@@ -588,10 +623,15 @@ impl PuzzleScreen {
 
         if self.pending_promotion.is_some() {
             let promo_btn = |role: Role, label: &'static str| {
-                button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                    .padding([spacing::XS, spacing::SM])
-                    .style(primary_button_style)
-                    .on_press(PuzzleMessage::SelectPromotion(role))
+                button(
+                    text(label)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([spacing::XS, spacing::SM])
+                .style(primary_button_style)
+                .on_press(PuzzleMessage::SelectPromotion(role))
             };
 
             let promo_box = container(
@@ -605,23 +645,32 @@ impl PuzzleScreen {
                         promo_btn(Role::Rook, "Rook"),
                         promo_btn(Role::Bishop, "Bishop"),
                         promo_btn(Role::Knight, "Knight"),
-                        button(text("Cancel").font(fonts::UI).size(type_scale::BODY))
-                            .padding([spacing::XS, spacing::SM])
-                            .style(secondary_button_style)
-                            .on_press(PuzzleMessage::CancelPromotion),
+                        button(
+                            text("Cancel")
+                                .font(fonts::UI)
+                                .size(type_scale::BODY)
+                                .wrapping(text::Wrapping::None)
+                        )
+                        .padding([spacing::XS, spacing::SM])
+                        .style(secondary_button_style)
+                        .on_press(PuzzleMessage::CancelPromotion),
                     ]
                     .spacing(spacing::XS),
                 ]
-                .spacing(spacing::XS),
+                .spacing(spacing::XS)
+                .width(Length::Fill),
             )
             .padding(spacing::SM)
             .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
             side_col = side_col.push(Space::with_height(spacing::XS)).push(promo_box);
         }
 
-        let content = row![board_el, Space::with_width(spacing::LG), side_col,]
+        let side_panel = container(side_col).width(Length::Fill).clip(true);
+
+        let content = row![board_el, Space::with_width(spacing::LG), side_panel,]
             .padding(spacing::MD)
             .width(Length::Fill)
             .height(Length::Fill);

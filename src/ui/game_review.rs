@@ -9,11 +9,11 @@ use crate::ui::theme::{
     badge_container_style, card_container_style, classification_color, fonts,
     icon_chevron_left, icon_chevron_right, icon_rotate_ccw, icon_skip_back, icon_skip_forward,
     icon_sparkles, icon_widget, palette, primary_button_style, secondary_button_style,
-    spacing, truncate, type_scale,
+    spacing, truncate, type_scale, with_tooltip,
 };
 use iced::border;
 use iced::widget::{
-    button, column, container, row, scrollable, text, Space,
+    button, column, container, row, scrollable, text, tooltip, Space,
 };
 use iced::{Alignment, Color, Element, Length};
 use shakmaty::{Chess, Position};
@@ -328,6 +328,10 @@ impl GameReviewScreen {
                     .black_elo
                     .map(|e| format!(" ({})", e))
                     .unwrap_or_default();
+                let full_title = format!(
+                    "{}{} vs {}{}",
+                    g.white, white_elo_str, g.black, black_elo_str
+                );
                 let title_str = format!(
                     "{}{} vs {}{}",
                     truncate(&g.white, 16),
@@ -337,24 +341,30 @@ impl GameReviewScreen {
                 );
                 let (_, resolved_opening) =
                     crate::pgn::resolve_opening_display(&g.opening, &g.eco, &g.pgn);
-                let opening_part = if resolved_opening.is_empty() {
+                let opening_full = if resolved_opening.is_empty() {
                     "Unknown Opening".to_string()
                 } else {
-                    truncate(&resolved_opening, 36)
+                    resolved_opening
                 };
-                let meta = format!("{} • {}", g.date, opening_part);
+                let meta_full = format!("{} • {}", g.date, opening_full);
+                let meta_short = format!("{} • {}", g.date, truncate(&opening_full, 36));
 
-                let mut title_row = row![
-                    text(title_str)
-                        .font(fonts::UI_BOLD)
-                        .size(type_scale::HEADING)
-                        .color(palette::TEXT_PRIMARY)
-                        .wrapping(text::Wrapping::WordOrGlyph)
-                        .width(Length::Fill),
-                ]
-                .spacing(spacing::XS)
-                .align_y(Alignment::Center)
-                .width(Length::Fill);
+                let title_text = text(title_str.clone())
+                    .font(fonts::UI_BOLD)
+                    .size(type_scale::HEADING)
+                    .color(palette::TEXT_PRIMARY)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .width(Length::Fill);
+                let title_el: Element<'a, GameReviewMessage> = if title_str != full_title {
+                    with_tooltip(title_text, full_title, tooltip::Position::Bottom)
+                } else {
+                    title_text.into()
+                };
+
+                let mut title_row = row![title_el]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill);
 
                 if let Some(out) = outcome {
                     let chip_bg = if out.is_draw() {
@@ -388,21 +398,29 @@ impl GameReviewScreen {
                     title_row = title_row.push(result_chip);
                 }
 
-                column![
-                    title_row,
-                    text(meta)
-                        .font(fonts::UI)
-                        .size(type_scale::CAPTION)
-                        .color(palette::TEXT_SECONDARY)
-                        .wrapping(text::Wrapping::WordOrGlyph),
-                ]
-                .spacing(spacing::XXS)
-                .into()
+                let meta_text = text(meta_short.clone())
+                    .font(fonts::UI)
+                    .size(type_scale::CAPTION)
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .width(Length::Fill);
+                let meta_el: Element<'a, GameReviewMessage> = if meta_short != meta_full {
+                    with_tooltip(meta_text, meta_full, tooltip::Position::Bottom)
+                } else {
+                    meta_text.into()
+                };
+
+                column![title_row, meta_el]
+                    .spacing(spacing::XXS)
+                    .width(Length::Fill)
+                    .into()
             }
             None => column![text("No Game Selected")
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::TITLE)
-                .color(palette::TEXT_MUTED)]
+                .color(palette::TEXT_MUTED)
+                .wrapping(text::Wrapping::WordOrGlyph)]
+            .width(Length::Fill)
             .into(),
         };
 
@@ -412,33 +430,44 @@ impl GameReviewScreen {
                 let white_acc = container(
                     text(format!("White: {:.1}%", an.white_accuracy))
                         .font(fonts::MONO_BOLD)
-                        .size(type_scale::HEADING)
+                        .size(type_scale::BODY)
                         .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::None),
                 )
                 .padding([spacing::XXS, spacing::XS])
+                .clip(true)
                 .style(badge_container_style(Color::from_rgba(46.0 / 255.0, 160.0 / 255.0, 67.0 / 255.0, 0.25)));
 
                 let black_acc = container(
                     text(format!("Black: {:.1}%", an.black_accuracy))
                         .font(fonts::MONO_BOLD)
-                        .size(type_scale::HEADING)
+                        .size(type_scale::BODY)
                         .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::None),
                 )
                 .padding([spacing::XXS, spacing::XS])
+                .clip(true)
                 .style(badge_container_style(Color::from_rgba(46.0 / 255.0, 160.0 / 255.0, 67.0 / 255.0, 0.25)));
 
                 let blunders = container(
-                    text(format!("Blunders: {} / {}", an.white_blunders, an.black_blunders))
+                    text(format!("Blunders: {}/{}", an.white_blunders, an.black_blunders))
                         .font(fonts::MONO)
-                        .size(type_scale::BODY)
+                        .size(type_scale::CAPTION)
                         .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::None),
                 )
                 .padding([spacing::XXS, spacing::XS])
+                .clip(true)
                 .style(badge_container_style(Color::from_rgba(218.0 / 255.0, 54.0 / 255.0, 51.0 / 255.0, 0.25)));
 
-                row![white_acc, Space::with_width(spacing::SM), black_acc, Space::with_width(spacing::SM), blunders]
-                    .align_y(Alignment::Center)
-                    .into()
+                container(
+                    row![white_acc, black_acc, blunders]
+                        .spacing(spacing::XS)
+                        .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .clip(true)
+                .into()
             }
             None => {
                 let status_label = if self.is_analyzing {
@@ -446,16 +475,22 @@ impl GameReviewScreen {
                         .font(fonts::UI_SEMIBOLD)
                         .size(type_scale::BODY)
                         .color(palette::ACCENT)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill)
                 } else if let Some(err) = &self.analysis_error {
                     text(err)
                         .font(fonts::UI)
                         .size(type_scale::BODY)
                         .color(palette::DANGER)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill)
                 } else {
                     text("Game not analyzed yet.")
                         .font(fonts::UI)
                         .size(type_scale::BODY)
                         .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill)
                 };
 
                 let btn_label = if self.is_analyzing {
@@ -469,12 +504,18 @@ impl GameReviewScreen {
                 row![
                     status_label,
                     Space::with_width(spacing::SM),
-                    button(text(btn_label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                        .padding([spacing::XS, spacing::SM])
-                        .style(primary_button_style)
-                        .on_press_maybe(if can_analyze { Some(GameReviewMessage::AnalyzeCurrentGame) } else { None }),
+                    button(
+                        text(btn_label)
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None)
+                    )
+                    .padding([spacing::XS, spacing::SM])
+                    .style(primary_button_style)
+                    .on_press_maybe(if can_analyze { Some(GameReviewMessage::AnalyzeCurrentGame) } else { None }),
                 ]
                 .align_y(Alignment::Center)
+                .width(Length::Fill)
                 .into()
             }
         };
@@ -482,7 +523,10 @@ impl GameReviewScreen {
         // Navigation controls with Lucide SVG icons
         let flip_content = row![
             icon_widget(icon_rotate_ccw(), 14.0, Some(palette::TEXT_PRIMARY)),
-            text("Flip").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+            text("Flip")
+                .font(fonts::UI_SEMIBOLD)
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
@@ -512,16 +556,19 @@ impl GameReviewScreen {
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
 
-        let keyboard_hint = text("Keys: ← Prev  •  → Next  •  Home / End (↑ / ↓)  •  F Flip")
+        let keyboard_hint = text("Keys: ← Prev • → Next • Home / End (↑ / ↓) • F Flip")
             .font(fonts::UI)
             .size(type_scale::CAPTION)
-            .color(palette::TEXT_MUTED);
+            .color(palette::TEXT_MUTED)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Length::Fill);
 
         let nav_section = column![
             nav_controls,
             keyboard_hint,
         ]
-        .spacing(spacing::XXS);
+        .spacing(spacing::XXS)
+        .width(Length::Fill);
 
         // Move Evaluation Graph
         let eval_graph: Element<'a, GameReviewMessage> = match analysis {
@@ -536,16 +583,28 @@ impl GameReviewScreen {
                 container(
                     column![
                         row![
-                            text("Advantage Graph").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION).color(palette::TEXT_MUTED),
+                            text("Advantage Graph")
+                                .font(fonts::UI_SEMIBOLD)
+                                .size(type_scale::CAPTION)
+                                .color(palette::TEXT_MUTED)
+                                .wrapping(text::Wrapping::None),
                             Space::with_width(Length::Fill),
-                            text("Click graph to jump").font(fonts::UI).size(type_scale::CAPTION).color(palette::TEXT_MUTED),
+                            text("Click graph to jump")
+                                .font(fonts::UI)
+                                .size(type_scale::CAPTION)
+                                .color(palette::TEXT_MUTED)
+                                .wrapping(text::Wrapping::None),
                         ]
-                        .align_y(Alignment::Center),
+                        .align_y(Alignment::Center)
+                        .width(Length::Fill),
                         Space::with_height(spacing::XXS),
                         graph_widget,
                     ]
+                    .width(Length::Fill),
                 )
                 .padding(spacing::XS)
+                .width(Length::Fill)
+                .clip(true)
                 .style(card_container_style)
                 .into()
             }
@@ -562,10 +621,12 @@ impl GameReviewScreen {
                 let class_badge = container(
                     text(format!("{} {}", m.classification.symbol(), m.classification.name()))
                         .font(fonts::UI_BOLD)
-                        .size(type_scale::HEADING)
+                        .size(type_scale::BODY)
                         .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::None),
                 )
                 .padding([spacing::XXS, spacing::XS])
+                .clip(true)
                 .style(badge_container_style(class_color));
 
                 let best_line_str = m
@@ -574,25 +635,30 @@ impl GameReviewScreen {
                     .and_then(|e| e.best_move.clone())
                     .unwrap_or_else(|| "None".to_string());
 
-                let best_move_text = text(format!("Best Move: {}", best_line_str))
+                let best_move_text = text(format!("Best: {}", truncate(&best_line_str, 10)))
                     .font(fonts::MONO)
                     .size(type_scale::BODY)
-                    .color(palette::TEXT_SECONDARY);
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None);
 
-                let loss_text = text(format!("Win% Loss: {:.1}%", m.win_prob_loss))
+                let loss_text = text(format!("Loss: {:.1}%", m.win_prob_loss))
                     .font(fonts::MONO)
                     .size(type_scale::BODY)
-                    .color(palette::TEXT_SECONDARY);
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None);
 
                 let coach_label = if self.is_coach_loading {
-                    "Thinking..."
+                    "Thinking…"
                 } else {
                     "Ask Coach"
                 };
 
                 let coach_content = row![
                     icon_widget(icon_sparkles(), 14.0, Some(palette::TEXT_PRIMARY)),
-                    text(coach_label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+                    text(coach_label)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
                 ]
                 .spacing(spacing::XS)
                 .align_y(Alignment::Center);
@@ -604,37 +670,62 @@ impl GameReviewScreen {
 
                 let mut col = column![
                     row![
-                        text(ply_title).font(fonts::MONO_BOLD).size(type_scale::TITLE).color(palette::TEXT_PRIMARY),
-                        Space::with_width(spacing::SM),
+                        container(
+                            text(ply_title)
+                                .font(fonts::MONO_BOLD)
+                                .size(type_scale::TITLE)
+                                .color(palette::TEXT_PRIMARY)
+                                .wrapping(text::Wrapping::None)
+                        )
+                        .width(Length::Fill)
+                        .clip(true),
+                        Space::with_width(spacing::XS),
                         class_badge,
                     ]
-                    .align_y(Alignment::Center),
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
                     row![
-                        best_move_text,
-                        Space::with_width(spacing::MD),
-                        loss_text,
-                        Space::with_width(spacing::MD),
+                        container(
+                            row![best_move_text, Space::with_width(spacing::SM), loss_text]
+                                .align_y(Alignment::Center)
+                        )
+                        .width(Length::Fill)
+                        .clip(true),
+                        Space::with_width(spacing::XS),
                         coach_btn,
                     ]
-                    .align_y(Alignment::Center),
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
                 ]
-                .spacing(spacing::XS);
+                .spacing(spacing::XS)
+                .width(Length::Fill);
 
                 if let Some(exp) = &self.coach_explanation {
                     let coach_box = container(
                         column![
                             row![
                                 icon_widget(icon_sparkles(), 14.0, Some(palette::ACCENT)),
-                                text("Coach Advice").font(fonts::UI_BOLD).size(type_scale::HEADING).color(palette::ACCENT),
+                                text("Coach Advice")
+                                    .font(fonts::UI_BOLD)
+                                    .size(type_scale::HEADING)
+                                    .color(palette::ACCENT)
+                                    .wrapping(text::Wrapping::None),
                             ]
                             .spacing(spacing::XS)
                             .align_y(Alignment::Center),
                             Space::with_height(spacing::XXS),
-                            text(exp).font(fonts::UI).size(type_scale::BODY).color(palette::TEXT_PRIMARY),
+                            text(exp)
+                                .font(fonts::UI)
+                                .size(type_scale::BODY)
+                                .color(palette::TEXT_PRIMARY)
+                                .wrapping(text::Wrapping::WordOrGlyph)
+                                .width(Length::Fill),
                         ]
+                        .width(Length::Fill),
                     )
                     .padding(spacing::SM)
                     .width(Length::Fill)
+                    .clip(true)
                     .style(card_container_style);
 
                     col = col.push(coach_box);
@@ -646,11 +737,13 @@ impl GameReviewScreen {
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::HEADING)
                 .color(palette::TEXT_MUTED)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .width(Length::Fill)
                 .into(),
         };
 
         // Scrollable move history list
-        let mut move_rows = column![].spacing(spacing::XXS);
+        let mut move_rows = column![].spacing(spacing::XXS).width(Length::Fill);
         if let Some(an) = analysis {
             let num_moves = (an.moves.len() + 1) / 2;
             for turn in 0..num_moves {
@@ -661,12 +754,18 @@ impl GameReviewScreen {
                     .font(fonts::MONO)
                     .size(type_scale::BODY)
                     .color(palette::TEXT_MUTED)
+                    .wrapping(text::Wrapping::None)
                     .width(Length::Fixed(32.0));
 
                 let white_btn = if let Some(m) = an.moves.get(white_idx) {
                     let is_active = self.current_move_idx == white_idx + 1;
                     let label = format!("{} {}", m.san, m.classification.symbol());
-                    button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                    button(
+                        text(label)
+                            .font(fonts::MONO)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                    )
                         .padding([spacing::XXS, spacing::XS])
                         .style(move |_theme, _status| {
                             if is_active {
@@ -692,7 +791,12 @@ impl GameReviewScreen {
                 let black_btn = if let Some(m) = an.moves.get(black_idx) {
                     let is_active = self.current_move_idx == black_idx + 1;
                     let label = format!("{} {}", m.san, m.classification.symbol());
-                    button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                    button(
+                        text(label)
+                            .font(fonts::MONO)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                    )
                         .padding([spacing::XXS, spacing::XS])
                         .style(move |_theme, _status| {
                             if is_active {
@@ -717,11 +821,12 @@ impl GameReviewScreen {
 
                 let row_item = row![
                     num_label,
-                    container(white_btn).width(Length::FillPortion(1)),
-                    container(black_btn).width(Length::FillPortion(1)),
+                    container(white_btn).width(Length::FillPortion(1)).clip(true),
+                    container(black_btn).width(Length::FillPortion(1)).clip(true),
                 ]
                 .align_y(Alignment::Center)
-                .spacing(spacing::XXS);
+                .spacing(spacing::XXS)
+                .width(Length::Fill);
 
                 move_rows = move_rows.push(row_item);
             }
@@ -735,12 +840,18 @@ impl GameReviewScreen {
                     .font(fonts::MONO)
                     .size(type_scale::BODY)
                     .color(palette::TEXT_MUTED)
+                    .wrapping(text::Wrapping::None)
                     .width(Length::Fixed(32.0));
 
                 let white_btn = if let Some(m) = self.cached_moves.get(white_idx) {
                     let is_active = self.current_move_idx == white_idx + 1;
                     let label = m.san.clone();
-                    button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                    button(
+                        text(label)
+                            .font(fonts::MONO)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                    )
                         .padding([spacing::XXS, spacing::XS])
                         .style(move |_theme, _status| {
                             if is_active {
@@ -766,7 +877,12 @@ impl GameReviewScreen {
                 let black_btn = if let Some(m) = self.cached_moves.get(black_idx) {
                     let is_active = self.current_move_idx == black_idx + 1;
                     let label = m.san.clone();
-                    button(text(label).font(fonts::MONO).size(type_scale::BODY))
+                    button(
+                        text(label)
+                            .font(fonts::MONO)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                    )
                         .padding([spacing::XXS, spacing::XS])
                         .style(move |_theme, _status| {
                             if is_active {
@@ -791,11 +907,12 @@ impl GameReviewScreen {
 
                 let row_item = row![
                     num_label,
-                    container(white_btn).width(Length::FillPortion(1)),
-                    container(black_btn).width(Length::FillPortion(1)),
+                    container(white_btn).width(Length::FillPortion(1)).clip(true),
+                    container(black_btn).width(Length::FillPortion(1)).clip(true),
                 ]
                 .align_y(Alignment::Center)
-                .spacing(spacing::XXS);
+                .spacing(spacing::XXS)
+                .width(Length::Fill);
 
                 move_rows = move_rows.push(row_item);
             }
@@ -809,7 +926,8 @@ impl GameReviewScreen {
                         .font(fonts::UI_SEMIBOLD)
                         .size(type_scale::CAPTION)
                         .color(palette::TEXT_SECONDARY)
-                        .wrapping(text::Wrapping::WordOrGlyph),
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill),
                 )
                 .padding([spacing::XS, spacing::XS])
                 .width(Length::Fill)
@@ -830,6 +948,8 @@ impl GameReviewScreen {
                 .width(Length::Fill),
         )
         .padding(spacing::SM)
+        .width(Length::Fill)
+        .clip(true)
         .style(card_container_style);
 
         let mut sidebar_col = column![
@@ -852,7 +972,10 @@ impl GameReviewScreen {
             .push(current_move_detail)
             .push(move_list_card);
 
-        sidebar_col.into()
+        container(sidebar_col)
+            .width(Length::Fill)
+            .clip(true)
+            .into()
     }
 }
 

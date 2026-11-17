@@ -6,9 +6,9 @@ use crate::ui::game_layout::{
 use crate::ui::theme::{
     card_container_style, fonts, icon_chevron_left, icon_chevron_right, icon_play,
     icon_refresh_cw, icon_widget, nav_button_style, palette, primary_button_style,
-    secondary_button_style, spacing, type_scale,
+    secondary_button_style, spacing, truncate, type_scale, with_tooltip,
 };
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, scrollable, text, tooltip, Space};
 use iced::{Alignment, Element, Length};
 use shakmaty::{Chess, Color, Move, Position, Role, Square};
 
@@ -285,12 +285,27 @@ impl ExplorerScreen {
         let title = text("Position & Opening Explorer")
             .font(fonts::UI_BOLD)
             .size(type_scale::TITLE)
-            .color(palette::TEXT_PRIMARY);
+            .color(palette::TEXT_PRIMARY)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Length::Fill);
 
         let eco_text = if self.current_eco.is_empty() {
             String::new()
         } else {
             format!("[{}] ", self.current_eco)
+        };
+        let opening_full = format!("{}{}", eco_text, self.current_opening);
+        let opening_short = truncate(&opening_full, 48);
+        let opening_txt = text(opening_short.clone())
+            .font(fonts::UI_SEMIBOLD)
+            .size(type_scale::HEADING)
+            .color(palette::TEXT_PRIMARY)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Length::Fill);
+        let opening_el: Element<'a, ExplorerMessage> = if opening_short != opening_full {
+            with_tooltip(opening_txt, opening_full, tooltip::Position::Bottom)
+        } else {
+            opening_txt.into()
         };
 
         let op_card = container(
@@ -298,17 +313,17 @@ impl ExplorerScreen {
                 text("Identified Opening")
                     .font(fonts::UI)
                     .size(type_scale::CAPTION)
-                    .color(palette::TEXT_MUTED),
+                    .color(palette::TEXT_MUTED)
+                    .wrapping(text::Wrapping::None),
                 Space::with_height(spacing::XXS),
-                text(format!("{}{}", eco_text, self.current_opening))
-                    .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::HEADING)
-                    .color(palette::TEXT_PRIMARY),
+                opening_el,
             ]
-            .spacing(spacing::XXS),
+            .spacing(spacing::XXS)
+            .width(Length::Fill),
         )
         .padding(spacing::SM)
-        .width(Length::Fixed(380.0))
+        .width(Length::Fill)
+        .clip(true)
         .style(card_container_style);
 
         let can_undo = self.current_ply > 0;
@@ -316,13 +331,19 @@ impl ExplorerScreen {
 
         let undo_content = row![
             icon_widget(icon_chevron_left(), 14.0, Some(palette::TEXT_PRIMARY)),
-            text("Undo").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+            text("Undo")
+                .font(fonts::UI_SEMIBOLD)
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
 
         let redo_content = row![
-            text("Redo").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+            text("Redo")
+                .font(fonts::UI_SEMIBOLD)
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
             icon_widget(icon_chevron_right(), 14.0, Some(palette::TEXT_PRIMARY)),
         ]
         .spacing(spacing::XS)
@@ -330,49 +351,64 @@ impl ExplorerScreen {
 
         let reset_content = row![
             icon_widget(icon_refresh_cw(), 14.0, Some(palette::TEXT_PRIMARY)),
-            text("Reset").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+            text("Reset")
+                .font(fonts::UI_SEMIBOLD)
+                .size(type_scale::BODY)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(spacing::XS)
         .align_y(Alignment::Center);
 
-        let controls_row = row![
-            button(undo_content)
-                .padding([spacing::XS, spacing::SM])
-                .style(secondary_button_style)
-                .on_press_maybe(can_undo.then_some(ExplorerMessage::UndoMove)),
-            button(redo_content)
-                .padding([spacing::XS, spacing::SM])
-                .style(secondary_button_style)
-                .on_press_maybe(can_redo.then_some(ExplorerMessage::RedoMove)),
-            button(reset_content)
-                .padding([spacing::XS, spacing::SM])
-                .style(secondary_button_style)
-                .on_press(ExplorerMessage::ResetBoard),
-        ]
-        .spacing(spacing::SM);
+        let controls_row = container(
+            row![
+                button(undo_content)
+                    .padding([spacing::XS, spacing::SM])
+                    .style(secondary_button_style)
+                    .on_press_maybe(can_undo.then_some(ExplorerMessage::UndoMove)),
+                button(redo_content)
+                    .padding([spacing::XS, spacing::SM])
+                    .style(secondary_button_style)
+                    .on_press_maybe(can_redo.then_some(ExplorerMessage::RedoMove)),
+                button(reset_content)
+                    .padding([spacing::XS, spacing::SM])
+                    .style(secondary_button_style)
+                    .on_press(ExplorerMessage::ResetBoard),
+            ]
+            .spacing(spacing::SM),
+        )
+        .width(Length::Fill)
+        .clip(true);
 
         // Clickable Move History
         let history_header = row![
             text("Move History")
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::HEADING)
-                .color(palette::TEXT_SECONDARY),
+                .color(palette::TEXT_SECONDARY)
+                .wrapping(text::Wrapping::None),
             Space::with_width(Length::Fill),
-            button(text("Start").font(fonts::UI_SEMIBOLD).size(type_scale::CAPTION))
-                .padding([2.0, 8.0])
-                .style(nav_button_style(self.current_ply == 0))
-                .on_press(ExplorerMessage::JumpToMove(0)),
+            button(
+                text("Start")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::CAPTION)
+                    .wrapping(text::Wrapping::None)
+            )
+            .padding([2.0, 8.0])
+            .style(nav_button_style(self.current_ply == 0))
+            .on_press(ExplorerMessage::JumpToMove(0)),
         ]
         .align_y(Alignment::Center)
-        .width(Length::Fixed(380.0));
+        .width(Length::Fill);
 
-        let mut history_rows = column![].spacing(spacing::XXS);
+        let mut history_rows = column![].spacing(spacing::XXS).width(Length::Fill);
         if self.move_history.is_empty() {
             history_rows = history_rows.push(
                 text("No moves yet. Click pieces or candidate continuations to explore.")
                     .font(fonts::UI)
                     .size(type_scale::CAPTION)
-                    .color(palette::TEXT_MUTED),
+                    .color(palette::TEXT_MUTED)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .width(Length::Fill),
             );
         } else {
             for (pair_idx, pair) in self.move_history.chunks(2).enumerate() {
@@ -386,6 +422,7 @@ impl ExplorerScreen {
                     text(w_san)
                         .font(fonts::MONO_BOLD)
                         .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None)
                         .color(if w_future {
                             palette::TEXT_MUTED
                         } else {
@@ -401,11 +438,13 @@ impl ExplorerScreen {
                         .font(fonts::MONO)
                         .size(type_scale::BODY)
                         .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::None)
                         .width(Length::Fixed(32.0)),
-                    w_btn,
+                    container(w_btn).width(Length::FillPortion(1)).clip(true),
                 ]
                 .spacing(spacing::XS)
-                .align_y(Alignment::Center);
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
 
                 if let Some(black_entry) = pair.get(1) {
                     let b_ply = pair_idx * 2 + 2;
@@ -416,6 +455,7 @@ impl ExplorerScreen {
                         text(&black_entry.san)
                             .font(fonts::MONO_BOLD)
                             .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None)
                             .color(if b_future {
                                 palette::TEXT_MUTED
                             } else {
@@ -426,7 +466,9 @@ impl ExplorerScreen {
                     .style(nav_button_style(b_active))
                     .on_press(ExplorerMessage::JumpToMove(b_ply));
 
-                    move_row = move_row.push(b_btn);
+                    move_row = move_row.push(container(b_btn).width(Length::FillPortion(1)).clip(true));
+                } else {
+                    move_row = move_row.push(Space::with_width(Length::FillPortion(1)));
                 }
 
                 history_rows = history_rows.push(move_row);
@@ -435,7 +477,8 @@ impl ExplorerScreen {
 
         let history_card = container(scrollable(history_rows).height(Length::Fixed(140.0)))
             .padding(spacing::SM)
-            .width(Length::Fixed(380.0))
+            .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
         // Legal candidate moves from current position
@@ -445,20 +488,25 @@ impl ExplorerScreen {
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::CAPTION)
                 .color(palette::TEXT_MUTED)
+                .wrapping(text::Wrapping::None)
                 .width(Length::Fixed(80.0)),
             text("Status")
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::CAPTION)
                 .color(palette::TEXT_MUTED)
+                .wrapping(text::Wrapping::None)
                 .width(Length::FillPortion(1)),
             text("Action")
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::CAPTION)
                 .color(palette::TEXT_MUTED)
+                .wrapping(text::Wrapping::None)
                 .width(Length::Fixed(80.0)),
         ]
-        .padding([spacing::XXS, spacing::XS])]
-        .spacing(spacing::XXS);
+        .padding([spacing::XXS, spacing::XS])
+        .width(Length::Fill)]
+        .spacing(spacing::XXS)
+        .width(Length::Fill);
 
         for m in legal_moves.iter().take(20) {
             let san_str = shakmaty::san::SanPlus::from_move(
@@ -470,23 +518,34 @@ impl ExplorerScreen {
 
             let play_content = row![
                 icon_widget(icon_play(), 12.0, Some(palette::TEXT_PRIMARY)),
-                text("Play").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
+                text("Play")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::BODY)
+                    .wrapping(text::Wrapping::None),
             ]
             .spacing(spacing::XXS)
             .align_y(Alignment::Center);
 
             let row_item = container(
                 row![
-                    text(san_str)
-                        .font(fonts::MONO_BOLD)
-                        .size(type_scale::BODY)
-                        .color(palette::TEXT_PRIMARY)
-                        .width(Length::Fixed(80.0)),
-                    text("Legal Move")
-                        .font(fonts::UI)
-                        .size(type_scale::CAPTION)
-                        .color(palette::SUCCESS)
-                        .width(Length::FillPortion(1)),
+                    container(
+                        text(san_str)
+                            .font(fonts::MONO_BOLD)
+                            .size(type_scale::BODY)
+                            .color(palette::TEXT_PRIMARY)
+                            .wrapping(text::Wrapping::None)
+                    )
+                    .width(Length::Fixed(80.0))
+                    .clip(true),
+                    container(
+                        text("Legal Move")
+                            .font(fonts::UI)
+                            .size(type_scale::CAPTION)
+                            .color(palette::SUCCESS)
+                            .wrapping(text::Wrapping::None)
+                    )
+                    .width(Length::FillPortion(1))
+                    .clip(true),
                     button(play_content)
                         .padding([spacing::XXS, spacing::SM])
                         .style(secondary_button_style)
@@ -494,9 +553,11 @@ impl ExplorerScreen {
                 ]
                 .spacing(spacing::SM)
                 .align_y(Alignment::Center)
-                .padding([spacing::XXS, spacing::XS]),
+                .padding([spacing::XXS, spacing::XS])
+                .width(Length::Fill),
             )
             .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
             candidate_moves_col = candidate_moves_col.push(row_item);
@@ -511,7 +572,8 @@ impl ExplorerScreen {
             Space::with_height(spacing::XS),
             controls_row,
         ]
-        .spacing(spacing::XS);
+        .spacing(spacing::XS)
+        .width(Length::Fill);
 
         if let Some(ref out) = terminal {
             sidebar = sidebar.push(render_result_banner(out));
@@ -526,16 +588,22 @@ impl ExplorerScreen {
                 text("Candidate Continuations")
                     .font(fonts::UI_SEMIBOLD)
                     .size(type_scale::HEADING)
-                    .color(palette::TEXT_SECONDARY),
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None),
             )
             .push(moves_scroll);
 
         if self.pending_promotion.is_some() {
             let promo_btn = |role: Role, label: &'static str| {
-                button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                    .padding([spacing::XS, spacing::SM])
-                    .style(primary_button_style)
-                    .on_press(ExplorerMessage::SelectPromotion(role))
+                button(
+                    text(label)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([spacing::XS, spacing::SM])
+                .style(primary_button_style)
+                .on_press(ExplorerMessage::SelectPromotion(role))
             };
 
             let promo_box = container(
@@ -549,23 +617,32 @@ impl ExplorerScreen {
                         promo_btn(Role::Rook, "Rook"),
                         promo_btn(Role::Bishop, "Bishop"),
                         promo_btn(Role::Knight, "Knight"),
-                        button(text("Cancel").font(fonts::UI).size(type_scale::BODY))
-                            .padding([spacing::XS, spacing::SM])
-                            .style(secondary_button_style)
-                            .on_press(ExplorerMessage::CancelPromotion),
+                        button(
+                            text("Cancel")
+                                .font(fonts::UI)
+                                .size(type_scale::BODY)
+                                .wrapping(text::Wrapping::None)
+                        )
+                        .padding([spacing::XS, spacing::SM])
+                        .style(secondary_button_style)
+                        .on_press(ExplorerMessage::CancelPromotion),
                     ]
                     .spacing(spacing::XS),
                 ]
-                .spacing(spacing::XS),
+                .spacing(spacing::XS)
+                .width(Length::Fill),
             )
             .padding(spacing::SM)
-            .width(Length::Fixed(380.0))
+            .width(Length::Fill)
+            .clip(true)
             .style(card_container_style);
 
             sidebar = sidebar.push(Space::with_height(spacing::XS)).push(promo_box);
         }
 
-        let content = row![board_el, Space::with_width(spacing::LG), sidebar,]
+        let side_panel = container(sidebar).width(Length::Fill).clip(true);
+
+        let content = row![board_el, Space::with_width(spacing::LG), side_panel,]
             .padding(spacing::MD)
             .width(Length::Fill)
             .height(Length::Fill);

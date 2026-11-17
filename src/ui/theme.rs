@@ -1,6 +1,6 @@
 use crate::analysis::MoveClassification;
-use iced::widget::{button, container, svg, text_input};
-use iced::{border, Color, Theme};
+use iced::widget::{button, container, svg, text, text_input, tooltip};
+use iced::{border, Color, Element, Theme};
 use std::sync::OnceLock;
 
 // ==========================================
@@ -492,4 +492,52 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars - 1).collect();
     out.push('…');
     out
+}
+
+pub fn tooltip_surface_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(palette::BG_ELEVATED.into()),
+        border: border::rounded(spacing::RADIUS)
+            .color(palette::BORDER)
+            .width(1.0),
+        text_color: Some(palette::TEXT_PRIMARY),
+        ..Default::default()
+    }
+}
+
+pub fn with_tooltip<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    tip: impl Into<String>,
+    pos: tooltip::Position,
+) -> Element<'a, Message> {
+    let tip_str: String = tip.into();
+    tooltip(
+        content,
+        container(
+            text(tip_str)
+                .font(fonts::UI)
+                .size(type_scale::CAPTION)
+                .color(palette::TEXT_PRIMARY)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        )
+        .max_width(340.0)
+        .padding([4.0, 8.0])
+        .style(tooltip_surface_style),
+        pos,
+    )
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_preserves_short_and_appends_ellipsis() {
+        assert_eq!(truncate("Sicilian", 20), "Sicilian");
+        assert_eq!(truncate("Sicilian", 8), "Sicilian");
+        assert_eq!(truncate("Sicilian Defense", 9), "Sicilian…");
+        assert_eq!(truncate("abc", 1), "…");
+        assert_eq!(truncate("abc", 0), "");
+    }
 }
