@@ -1,6 +1,8 @@
 use crate::openings::identify_opening;
 use crate::ui::board::{BoardMessage, BoardWidget};
-use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
+use crate::ui::game_layout::{
+    render_result_banner, render_unified_board_column, GameOutcome, PlayerInfo,
+};
 use crate::ui::theme::{
     card_container_style, fonts, icon_chevron_left, icon_chevron_right, icon_play,
     icon_refresh_cw, icon_widget, nav_button_style, palette, primary_button_style,
@@ -235,11 +237,35 @@ impl ExplorerScreen {
         self.update_opening();
     }
 
+    pub fn terminal_outcome(&self) -> Option<GameOutcome> {
+        let pos = &self.board_widget.position;
+        if pos.is_checkmate() {
+            if pos.turn() == Color::Black {
+                Some(GameOutcome::new("1-0", "Checkmate — White wins"))
+            } else {
+                Some(GameOutcome::new("0-1", "Checkmate — Black wins"))
+            }
+        } else if pos.is_stalemate() {
+            Some(GameOutcome::new("1/2-1/2", "Draw by stalemate"))
+        } else if pos.is_insufficient_material() {
+            Some(GameOutcome::new("1/2-1/2", "Draw by insufficient material"))
+        } else if pos.is_game_over() {
+            Some(GameOutcome::new("1/2-1/2", "Game over"))
+        } else {
+            None
+        }
+    }
+
     pub fn view<'a>(&'a self) -> Element<'a, ExplorerMessage> {
         let is_white_turn = self.board_widget.position.turn() == Color::White;
+        let terminal = self.terminal_outcome();
 
-        let black_player = PlayerInfo::new("Black", false).with_active_turn(!is_white_turn);
-        let white_player = PlayerInfo::new("White", true).with_active_turn(is_white_turn);
+        let black_player = PlayerInfo::new("Black", false)
+            .with_active_turn(!is_white_turn && terminal.is_none())
+            .with_result(terminal.as_ref().and_then(|o| o.player_result(false)));
+        let white_player = PlayerInfo::new("White", true)
+            .with_active_turn(is_white_turn && terminal.is_none())
+            .with_result(terminal.as_ref().and_then(|o| o.player_result(true)));
 
         let (top_player, bottom_player) = if self.board_widget.flipped {
             (&white_player, &black_player)
@@ -484,17 +510,25 @@ impl ExplorerScreen {
             op_card,
             Space::with_height(spacing::XS),
             controls_row,
-            Space::with_height(spacing::XS),
-            history_header,
-            history_card,
-            Space::with_height(spacing::XS),
-            text("Candidate Continuations")
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::HEADING)
-                .color(palette::TEXT_SECONDARY),
-            moves_scroll,
         ]
         .spacing(spacing::XS);
+
+        if let Some(ref out) = terminal {
+            sidebar = sidebar.push(render_result_banner(out));
+        }
+
+        sidebar = sidebar
+            .push(Space::with_height(spacing::XS))
+            .push(history_header)
+            .push(history_card)
+            .push(Space::with_height(spacing::XS))
+            .push(
+                text("Candidate Continuations")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::HEADING)
+                    .color(palette::TEXT_SECONDARY),
+            )
+            .push(moves_scroll);
 
         if self.pending_promotion.is_some() {
             let promo_btn = |role: Role, label: &'static str| {

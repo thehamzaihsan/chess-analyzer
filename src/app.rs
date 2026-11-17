@@ -277,7 +277,18 @@ impl App {
                 let pgns = client.fetch_archive_pgns(&next_url).await.map_err(|e| e.to_string())?;
                 for pgn in &pgns {
                     for g in parse_pgn_games(pgn) {
-                        let _ = db.insert_parsed_game(&g);
+                        let _ = db.insert_game(
+                            &g.white,
+                            &g.black,
+                            &g.result,
+                            g.white_elo,
+                            g.black_elo,
+                            &g.date,
+                            &g.time_control,
+                            &g.eco,
+                            &g.opening,
+                            &g.to_pgn_string(),
+                        );
                     }
                 }
                 let games = db.list_games().map_err(|e| e.to_string())?;
@@ -466,7 +477,18 @@ impl App {
                             if g.moves.is_empty() && g.white == "Unknown" && g.black == "Unknown" {
                                 continue;
                             }
-                            if let Ok(id) = db.insert_parsed_game(g) {
+                            if let Ok(id) = db.insert_game(
+                                &g.white,
+                                &g.black,
+                                &g.result,
+                                g.white_elo,
+                                g.black_elo,
+                                &g.date,
+                                &g.time_control,
+                                &g.eco,
+                                &g.opening,
+                                &g.to_pgn_string(),
+                            ) {
                                 if let Ok(Some(stored)) = db.get_game(id) {
                                     imported.push(stored);
                                 }
@@ -506,7 +528,18 @@ impl App {
                             if g.moves.is_empty() && g.white == "Unknown" && g.black == "Unknown" {
                                 continue;
                             }
-                            if let Ok(id) = db.insert_parsed_game(g) {
+                            if let Ok(id) = db.insert_game(
+                                &g.white,
+                                &g.black,
+                                &g.result,
+                                g.white_elo,
+                                g.black_elo,
+                                &g.date,
+                                &g.time_control,
+                                &g.eco,
+                                &g.opening,
+                                &g.to_pgn_string(),
+                            ) {
                                 if let Ok(Some(stored)) = db.get_game(id) {
                                     imported.push(stored);
                                 }
@@ -1113,6 +1146,10 @@ impl App {
                 if let Some(fen) = self.bot_screen.reset_game() {
                     return self.spawn_bot_search(fen);
                 }
+                Task::none()
+            }
+            AppMessage::Bot(BotMessage::Resign) => {
+                self.bot_screen.resign();
                 Task::none()
             }
             AppMessage::Bot(BotMessage::RetryBotMove) => {

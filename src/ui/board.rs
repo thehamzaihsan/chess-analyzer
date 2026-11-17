@@ -74,6 +74,7 @@ pub struct BoardWidget {
     pub last_move: Option<(Square, Square)>,
     pub best_move_arrow: Option<(Square, Square)>,
     pub custom_arrows: Vec<BoardArrow>,
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -115,6 +116,7 @@ impl BoardWidget {
             last_move: None,
             best_move_arrow: None,
             custom_arrows: Vec::new(),
+            interactive: true,
         }
     }
 
@@ -186,6 +188,11 @@ impl Program<BoardMessage> for BoardWidget {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> (Status, Option<BoardMessage>) {
+        if !self.interactive {
+            state.dragging = None;
+            return (Status::Ignored, None);
+        }
+
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(cursor_pos) = cursor.position_in(bounds) {
@@ -250,6 +257,10 @@ impl Program<BoardMessage> for BoardWidget {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> mouse::Interaction {
+        if !self.interactive {
+            return mouse::Interaction::default();
+        }
+
         if state.dragging.as_ref().is_some_and(|d| d.is_dragging) {
             return mouse::Interaction::Grabbing;
         }
@@ -303,10 +314,11 @@ impl Program<BoardMessage> for BoardWidget {
         });
 
         let in_check = self.position.is_check();
+        let is_mate = self.position.is_checkmate();
         let turn = self.position.turn();
 
         // 1. Draw Squares & Layered Highlights
-        // Layer order: Base square -> Last move -> Check -> Selected (over last-move) -> Drag hover border
+        // Layer order: Base square -> Last move -> Check / Mate -> Selected (over last-move) -> Drag hover border
         for rank_idx in 0..8u8 {
             for file_idx in 0..8u8 {
                 let file = File::new(file_idx as u32);
@@ -328,7 +340,7 @@ impl Program<BoardMessage> for BoardWidget {
                     }
                 }
 
-                // Check highlight on the checked King's square
+                // Check / Checkmate highlight on the checked/mated King's square
                 let is_checked_king = in_check
                     && self
                         .position
@@ -336,7 +348,26 @@ impl Program<BoardMessage> for BoardWidget {
                         .piece_at(square)
                         .is_some_and(|p| p.role == Role::King && p.color == turn);
                 if is_checked_king {
-                    frame.fill_rectangle(rect.position(), rect.size(), board_theme::CHECK);
+                    if is_mate {
+                        frame.fill_rectangle(
+                            rect.position(),
+                            rect.size(),
+                            Color::from_rgba(220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 0.90),
+                        );
+                        let inset = (sq_size * 0.05).max(2.0);
+                        let mate_border = Path::rectangle(
+                            Point::new(rect.x + inset / 2.0, rect.y + inset / 2.0),
+                            Size::new(rect.width - inset, rect.height - inset),
+                        );
+                        frame.stroke(
+                            &mate_border,
+                            Stroke::default()
+                                .with_color(Color::from_rgb8(255, 110, 110))
+                                .with_width(inset),
+                        );
+                    } else {
+                        frame.fill_rectangle(rect.position(), rect.size(), board_theme::CHECK);
+                    }
                 }
 
                 // Selected-square highlight (layered over last-move; preserves check glow if King is in check)

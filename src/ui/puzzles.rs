@@ -1,6 +1,9 @@
 use crate::db::Puzzle;
 use crate::ui::board::{BoardMessage, BoardWidget};
-use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
+use crate::ui::game_layout::{
+    render_result_banner_with_tone, render_unified_board_column, GameOutcome, OutcomeTone,
+    PlayerInfo, PlayerResult,
+};
 use crate::ui::theme::{
     card_container_style, fonts, icon_check, icon_chevron_right, icon_eye, icon_refresh_cw,
     icon_sparkles, icon_widget, icon_x, nav_button_style, palette, primary_button_style,
@@ -231,6 +234,7 @@ impl PuzzleScreen {
                 if self.current_move_step >= self.puzzle_moves.len() {
                     crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                     self.is_solved = true;
+                    self.board_widget.interactive = false;
                     self.puzzle_status = "Correct! Puzzle solved!".to_string();
                 } else {
                     if let Some(opp_uci) = self.puzzle_moves.get(self.current_move_step) {
@@ -255,6 +259,7 @@ impl PuzzleScreen {
                     if self.current_move_step >= self.puzzle_moves.len() {
                         crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                         self.is_solved = true;
+                        self.board_widget.interactive = false;
                         self.puzzle_status = "Correct! Puzzle solved!".to_string();
                     } else {
                         self.puzzle_status = "Good move! Find the continuation.".to_string();
@@ -346,13 +351,24 @@ impl PuzzleScreen {
         let user_active = !self.is_solved && (is_white_turn == user_is_white);
         let opp_active = !self.is_solved && (is_white_turn == opp_is_white);
 
+        let (user_badge, opp_badge) = if self.is_solved {
+            (Some(PlayerResult::Win), Some(PlayerResult::Loss))
+        } else if self.revealed_solution.is_some() {
+            (Some(PlayerResult::Loss), Some(PlayerResult::Win))
+        } else {
+            (None, None)
+        };
+
         let opp_player = PlayerInfo::new(format!("Opponent ({})", puzzle_source), opp_is_white)
             .with_rating(puzzle_rating)
             .with_title("PUZZLE")
-            .with_active_turn(opp_active);
+            .with_active_turn(opp_active)
+            .with_result(opp_badge);
 
         let user_status = if self.is_solved {
             "Solved!"
+        } else if self.revealed_solution.is_some() {
+            "Solution revealed"
         } else if self.puzzle_status.starts_with("Incorrect") {
             "Try again!"
         } else {
@@ -361,7 +377,8 @@ impl PuzzleScreen {
 
         let user_player = PlayerInfo::new("You", user_is_white)
             .with_status(user_status)
-            .with_active_turn(user_active);
+            .with_active_turn(user_active)
+            .with_result(user_badge);
 
         // board_widget.flipped is always !user_is_white, so user is always at the bottom.
         let (top_player, bottom_player) = (&opp_player, &user_player);
@@ -445,20 +462,44 @@ impl PuzzleScreen {
                 text(&self.puzzle_status)
                     .font(fonts::UI_SEMIBOLD)
                     .size(type_scale::HEADING)
-                    .color(status_color),
+                    .color(status_color)
+                    .wrapping(text::Wrapping::WordOrGlyph),
             ]
             .align_y(Alignment::Center)
         } else {
             row![text(&self.puzzle_status)
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::HEADING)
-                .color(status_color)]
+                .color(status_color)
+                .wrapping(text::Wrapping::WordOrGlyph)]
             .align_y(Alignment::Center)
         };
 
         let status_box = container(status_row)
             .padding(spacing::SM)
+            .width(Length::Fill)
             .style(card_container_style);
+
+        let outcome_banner: Option<Element<'a, PuzzleMessage>> = if self.is_solved {
+            let score = if user_is_white { "1-0" } else { "0-1" };
+            Some(render_result_banner_with_tone(
+                &GameOutcome::new(score, "Puzzle Solved!"),
+                OutcomeTone::Win,
+            ))
+        } else if self.revealed_solution.is_some() {
+            let score = if user_is_white { "0-1" } else { "1-0" };
+            Some(render_result_banner_with_tone(
+                &GameOutcome::new(score, "Puzzle Failed — Solution Revealed"),
+                OutcomeTone::Loss,
+            ))
+        } else if self.has_incorrect_attempt {
+            Some(render_result_banner_with_tone(
+                &GameOutcome::new("TRY", "Incorrect move — try again or use Hint"),
+                OutcomeTone::Loss,
+            ))
+        } else {
+            None
+        };
 
         let mut side_col = column![
             title,
@@ -467,9 +508,14 @@ impl PuzzleScreen {
             Space::with_height(spacing::SM),
             action_row,
             Space::with_height(spacing::SM),
-            status_box,
         ]
         .spacing(spacing::XS);
+
+        if let Some(banner) = outcome_banner {
+            side_col = side_col.push(banner);
+        } else {
+            side_col = side_col.push(status_box);
+        }
 
         if self.current_puzzle.is_some() {
             let hint_btn = button(

@@ -1,8 +1,12 @@
 use crate::ui::board::{BoardMessage, BoardWidget};
-use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
+use crate::ui::game_layout::{
+    render_result_banner_with_tone, render_unified_board_column, GameOutcome, OutcomeTone,
+    PlayerInfo, PlayerResult,
+};
 use crate::ui::theme::{
-    card_container_style, danger_button_style, fonts, icon_play, icon_refresh_cw, icon_widget,
-    nav_button_style, palette, primary_button_style, secondary_button_style, spacing, type_scale,
+    card_container_style, danger_button_style, fonts, icon_flag, icon_play, icon_refresh_cw,
+    icon_widget, nav_button_style, palette, primary_button_style, secondary_button_style,
+    spacing, type_scale,
 };
 use iced::border;
 use iced::widget::{button, column, container, row, text, Space};
@@ -24,6 +28,7 @@ pub enum BotMessage {
     SelectBot(usize),
     SelectColor(PlayerColorChoice),
     NewGame,
+    Resign,
     SelectPromotion(Role),
     CancelPromotion,
     RetryBotMove,
@@ -91,6 +96,7 @@ pub struct BotPlayScreen {
     pub pending_promotion: Option<(Square, Square)>,
     pub engine_error: Option<String>,
     pub is_game_over: bool,
+    pub game_outcome: Option<GameOutcome>,
     pub position_counts: HashMap<String, u32>,
 }
 
@@ -111,6 +117,7 @@ impl BotPlayScreen {
             pending_promotion: None,
             engine_error: None,
             is_game_over: false,
+            game_outcome: None,
             position_counts,
         }
     }
@@ -131,24 +138,52 @@ impl BotPlayScreen {
         *entry
     }
 
-    fn evaluate_game_over(&self, user_just_moved: bool, rep_count: u32) -> Option<String> {
+    fn evaluate_game_over(
+        &self,
+        user_just_moved: bool,
+        rep_count: u32,
+    ) -> Option<(GameOutcome, String)> {
         let pos = &self.board_widget.position;
         if pos.is_checkmate() {
             if user_just_moved {
-                Some("Checkmate! You won!".to_string())
+                let res = if self.player_is_white { "1-0" } else { "0-1" };
+                Some((
+                    GameOutcome::new(res, "Checkmate — You won!"),
+                    "Checkmate! You won!".to_string(),
+                ))
             } else {
-                Some(format!("Checkmate! {} won.", self.current_bot().name))
+                let res = if self.player_is_white { "0-1" } else { "1-0" };
+                let bot_name = self.current_bot().name;
+                Some((
+                    GameOutcome::new(res, format!("Checkmate — {} won", bot_name)),
+                    format!("Checkmate! {} won.", bot_name),
+                ))
             }
         } else if pos.is_stalemate() {
-            Some("Draw by stalemate.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by stalemate"),
+                "Draw by stalemate.".to_string(),
+            ))
         } else if pos.is_insufficient_material() {
-            Some("Draw by insufficient material.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by insufficient material"),
+                "Draw by insufficient material.".to_string(),
+            ))
         } else if rep_count >= 3 {
-            Some("Draw by threefold repetition.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by repetition"),
+                "Draw by threefold repetition.".to_string(),
+            ))
         } else if pos.halfmoves() >= 100 {
-            Some("Draw by 50-move rule.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by 50-move rule"),
+                "Draw by 50-move rule.".to_string(),
+            ))
         } else if pos.is_game_over() {
-            Some("Game drawn.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Game drawn"),
+                "Game drawn.".to_string(),
+            ))
         } else {
             None
         }
@@ -169,9 +204,11 @@ impl BotPlayScreen {
         let pos = Chess::default();
         self.board_widget = BoardWidget::new(pos);
         self.board_widget.flipped = !self.player_is_white;
+        self.board_widget.interactive = true;
         self.pending_promotion = None;
         self.engine_error = None;
         self.is_game_over = false;
+        self.game_outcome = None;
         self.position_counts.clear();
         self.record_current_position();
 
@@ -184,6 +221,23 @@ impl BotPlayScreen {
             self.game_status = "New game started! Your turn (White to move).".to_string();
             None
         }
+    }
+
+    pub fn resign(&mut self) {
+        if self.is_game_over {
+            return;
+        }
+        crate::audio::play_sound(crate::audio::SoundType::GameEnd);
+        self.game_generation = self.game_generation.wrapping_add(1);
+        self.is_engine_thinking = false;
+        self.is_game_over = true;
+        self.pending_promotion = None;
+        self.engine_error = None;
+        self.board_widget.selected_square = None;
+        self.board_widget.interactive = false;
+        let res = if self.player_is_white { "0-1" } else { "1-0" };
+        self.game_outcome = Some(GameOutcome::new(res, "You resigned"));
+        self.game_status = format!("You resigned — {} won.", self.current_bot().name);
     }
 
     pub fn handle_square_clicked(&mut self, sq: Square) -> Option<String> {
@@ -278,10 +332,12 @@ impl BotPlayScreen {
             self.engine_error = None;
 
             let rep_count = self.record_current_position();
-            if let Some(status) = self.evaluate_game_over(true, rep_count) {
+            if let Some((outcome, status)) = self.evaluate_game_over(true, rep_count) {
                 crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                 self.is_game_over = true;
                 self.is_engine_thinking = false;
+                self.board_widget.interactive = false;
+                self.game_outcome = Some(outcome);
                 self.game_status = status;
                 return None;
             }
@@ -356,9 +412,11 @@ impl BotPlayScreen {
                         self.engine_error = None;
 
                         let rep_count = self.record_current_position();
-                        if let Some(status) = self.evaluate_game_over(false, rep_count) {
+                        if let Some((outcome, status)) = self.evaluate_game_over(false, rep_count) {
                             crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                             self.is_game_over = true;
+                            self.board_widget.interactive = false;
+                            self.game_outcome = Some(outcome);
                             self.game_status = status;
                         } else {
                             self.game_status = "Your turn! Make your move.".to_string();
@@ -414,6 +472,15 @@ impl BotPlayScreen {
         let bot_active = !self.is_game_over && (is_white_turn == bot_is_white);
         let player_active = !self.is_game_over && (is_white_turn == self.player_is_white);
 
+        let bot_result = self
+            .game_outcome
+            .as_ref()
+            .and_then(|o| o.player_result(bot_is_white));
+        let user_result = self
+            .game_outcome
+            .as_ref()
+            .and_then(|o| o.player_result(self.player_is_white));
+
         let bot_status = if self.is_game_over {
             "Game Over"
         } else if self.is_engine_thinking {
@@ -438,11 +505,13 @@ impl BotPlayScreen {
             .with_rating(Some(bot.elo as i32))
             .with_title(bot.title)
             .with_status(bot_status)
-            .with_active_turn(bot_active);
+            .with_active_turn(bot_active)
+            .with_result(bot_result);
 
         let user_player = PlayerInfo::new("You", self.player_is_white)
             .with_status(user_status)
-            .with_active_turn(player_active);
+            .with_active_turn(player_active)
+            .with_result(user_result);
 
         // board_widget.flipped is always !player_is_white, so user is always at the bottom.
         let (top_player, bottom_player) = (&bot_player, &user_player);
@@ -550,9 +619,14 @@ impl BotPlayScreen {
             bot_cards = bot_cards.push(card);
         }
 
+        let new_game_label = if self.is_game_over {
+            "Rematch / New Game"
+        } else {
+            "New Game"
+        };
         let new_game_content = row![
             icon_widget(icon_play(), 14.0, Some(palette::TEXT_PRIMARY)),
-            text("Start New Game")
+            text(new_game_label)
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::BODY),
         ]
@@ -563,6 +637,20 @@ impl BotPlayScreen {
             .padding([spacing::SM, spacing::MD])
             .style(primary_button_style)
             .on_press(BotMessage::NewGame);
+
+        let resign_btn = button(
+            row![
+                icon_widget(icon_flag(), 14.0, Some(palette::TEXT_PRIMARY)),
+                text("Resign")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::BODY),
+            ]
+            .spacing(spacing::XS)
+            .align_y(Alignment::Center),
+        )
+        .padding([spacing::SM, spacing::MD])
+        .style(danger_button_style)
+        .on_press(BotMessage::Resign);
 
         let status_color = if self.engine_error.is_some() {
             palette::DANGER
@@ -576,7 +664,8 @@ impl BotPlayScreen {
             row![text(&self.game_status)
                 .font(fonts::UI_SEMIBOLD)
                 .size(type_scale::HEADING)
-                .color(status_color),]
+                .color(status_color)
+                .wrapping(text::Wrapping::WordOrGlyph)]
             .align_y(Alignment::Center),
         )
         .padding(spacing::SM)
@@ -591,9 +680,28 @@ impl BotPlayScreen {
             Space::with_height(spacing::XS),
             bot_cards,
             Space::with_height(spacing::SM),
-            row![new_game_btn, Space::with_width(spacing::SM), status_box].align_y(Alignment::Center),
         ]
         .spacing(spacing::XS);
+
+        if self.is_game_over {
+            if let Some(ref outcome) = self.game_outcome {
+                let tone = match user_result {
+                    Some(PlayerResult::Win) => OutcomeTone::Win,
+                    Some(PlayerResult::Loss) => OutcomeTone::Loss,
+                    _ => OutcomeTone::Draw,
+                };
+                side_col = side_col.push(render_result_banner_with_tone(outcome, tone));
+            }
+            let rematch_row = row![new_game_btn, status_box]
+                .spacing(spacing::SM)
+                .align_y(Alignment::Center);
+            side_col = side_col.push(rematch_row);
+        } else {
+            let action_row = row![new_game_btn, resign_btn, status_box]
+                .spacing(spacing::SM)
+                .align_y(Alignment::Center);
+            side_col = side_col.push(action_row);
+        }
 
         if self.pending_promotion.is_some() {
             let promo_btn = |role: Role, label: &'static str| {
@@ -794,5 +902,28 @@ mod tests {
                 assert_eq!(screen.game_status, "Draw by threefold repetition.");
             }
         }
+    }
+
+    #[test]
+    fn resign_ends_game_disables_board_and_sets_outcome() {
+        let mut screen = BotPlayScreen::new();
+        assert!(screen.board_widget.interactive);
+        assert!(screen.game_outcome.is_none());
+
+        screen.resign();
+        assert!(screen.is_game_over);
+        assert!(!screen.board_widget.interactive);
+        let outcome = screen.game_outcome.as_ref().unwrap();
+        assert_eq!(outcome.result, "0-1");
+        assert_eq!(outcome.reason, "You resigned");
+
+        // Subsequent board clicks are ignored
+        assert!(screen.handle_square_clicked(Square::E2).is_none());
+
+        // Reset restores board interactivity and clears outcome
+        screen.reset_game();
+        assert!(!screen.is_game_over);
+        assert!(screen.board_widget.interactive);
+        assert!(screen.game_outcome.is_none());
     }
 }

@@ -342,6 +342,8 @@ const SVG_REFRESH_CW: &[u8] = include_bytes!("../../assets/icons/lucide/refresh-
 const SVG_CPU: &[u8] = include_bytes!("../../assets/icons/lucide/cpu.svg");
 const SVG_EYE: &[u8] = include_bytes!("../../assets/icons/lucide/eye.svg");
 const SVG_DOWNLOAD: &[u8] = include_bytes!("../../assets/icons/lucide/download.svg");
+const SVG_FLAG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></svg>"#;
+const SVG_HANDSHAKE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/></svg>"#;
 
 const SVG_LOGO: &[u8] = include_bytes!("../../assets/logo.svg");
 static ICON_LOGO: OnceLock<svg::Handle> = OnceLock::new();
@@ -357,6 +359,8 @@ static ICON_REFRESH_CW: OnceLock<svg::Handle> = OnceLock::new();
 static ICON_CPU: OnceLock<svg::Handle> = OnceLock::new();
 static ICON_EYE: OnceLock<svg::Handle> = OnceLock::new();
 static ICON_DOWNLOAD: OnceLock<svg::Handle> = OnceLock::new();
+static ICON_FLAG: OnceLock<svg::Handle> = OnceLock::new();
+static ICON_HANDSHAKE: OnceLock<svg::Handle> = OnceLock::new();
 
 
 pub fn icon_logo() -> svg::Handle {
@@ -456,6 +460,14 @@ pub fn icon_download() -> svg::Handle {
     ICON_DOWNLOAD.get_or_init(|| svg::Handle::from_memory(SVG_DOWNLOAD)).clone()
 }
 
+pub fn icon_flag() -> svg::Handle {
+    ICON_FLAG.get_or_init(|| svg::Handle::from_memory(SVG_FLAG)).clone()
+}
+
+pub fn icon_handshake() -> svg::Handle {
+    ICON_HANDSHAKE.get_or_init(|| svg::Handle::from_memory(SVG_HANDSHAKE)).clone()
+}
+
 pub fn icon_widget<'a>(handle: svg::Handle, size: f32, color: Option<Color>) -> svg::Svg<'a, Theme> {
     let s = svg::Svg::new(handle).width(size).height(size);
     if let Some(c) = color {
@@ -463,4 +475,21 @@ pub fn icon_widget<'a>(handle: svg::Handle, size: f32, color: Option<Color>) -> 
     } else {
         s
     }
+}
+
+/// Truncates `s` to at most `max_chars` characters, appending an ellipsis (`…`) if truncated.
+pub fn truncate(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
 }

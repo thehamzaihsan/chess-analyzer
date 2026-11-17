@@ -1,21 +1,22 @@
 use crate::analysis::GameAnalysis;
 use crate::db::StoredGame;
 use crate::ui::board::{BoardMessage, BoardWidget};
-use shakmaty::Position;
-use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
 use crate::ui::charts::{EvalGraphMessage, EvalGraphWidget};
+use crate::ui::game_layout::{
+    render_result_banner, render_unified_board_column, GameOutcome, PlayerInfo,
+};
 use crate::ui::theme::{
     badge_container_style, card_container_style, classification_color, fonts,
     icon_chevron_left, icon_chevron_right, icon_rotate_ccw, icon_skip_back, icon_skip_forward,
     icon_sparkles, icon_widget, palette, primary_button_style, secondary_button_style,
-    spacing, type_scale,
+    spacing, truncate, type_scale,
 };
 use iced::border;
 use iced::widget::{
     button, column, container, row, scrollable, text, Space,
 };
 use iced::{Alignment, Color, Element, Length};
-use shakmaty::Chess;
+use shakmaty::{Chess, Position};
 
 #[derive(Debug, Clone)]
 pub enum GameReviewMessage {
@@ -40,6 +41,8 @@ pub struct GameReviewScreen {
     pub cached_moves: Vec<crate::pgn::ParsedMove>,
     pub is_analyzing: bool,
     pub analysis_error: Option<String>,
+    pub final_position: Option<Chess>,
+    pub game_outcome: Option<GameOutcome>,
 }
 
 impl GameReviewScreen {
@@ -52,6 +55,8 @@ impl GameReviewScreen {
             cached_moves: Vec::new(),
             is_analyzing: false,
             analysis_error: None,
+            final_position: None,
+            game_outcome: None,
         }
     }
 
@@ -67,6 +72,19 @@ impl GameReviewScreen {
             .next()
             .map(|g| g.moves)
             .unwrap_or_default();
+        self.final_position = self.cached_moves.last().and_then(|m| {
+            m.fen_after
+                .parse::<shakmaty::fen::Fen>()
+                .ok()
+                .and_then(|f| f.into_position(shakmaty::CastlingMode::Standard).ok())
+        });
+        self.game_outcome = crate::pgn::detect_game_outcome(
+            &game.pgn,
+            &game.result,
+            &game.white,
+            &game.black,
+            self.final_position.as_ref(),
+        );
     }
 
     pub fn update_board_to_move(&mut self, game: &StoredGame, idx: usize) {
@@ -145,15 +163,42 @@ impl GameReviewScreen {
         let (white_name, white_elo) = game.map(|g| (g.white.as_str(), g.white_elo)).unwrap_or(("White", None));
         let (black_name, black_elo) = game.map(|g| (g.black.as_str(), g.black_elo)).unwrap_or(("Black", None));
 
+        let total_moves = analysis
+            .map(|a| a.moves.len())
+            .unwrap_or(self.cached_moves.len());
+        let at_last_move = game.is_some() && self.current_move_idx >= total_moves;
+        let outcome = self.game_outcome.clone().or_else(|| {
+            game.and_then(|g| {
+                crate::pgn::detect_game_outcome(
+                    &g.pgn,
+                    &g.result,
+                    &g.white,
+                    &g.black,
+                    self.final_position.as_ref(),
+                )
+            })
+        });
+
         let is_white_turn = self.board_widget.position.turn() == shakmaty::Color::White;
+        let show_bar_badges = at_last_move && outcome.is_some();
 
         let white_player = PlayerInfo::new(white_name, true)
             .with_rating(white_elo)
-            .with_active_turn(is_white_turn);
+            .with_active_turn(is_white_turn && !show_bar_badges)
+            .with_result(if show_bar_badges {
+                outcome.as_ref().and_then(|o| o.player_result(true))
+            } else {
+                None
+            });
 
         let black_player = PlayerInfo::new(black_name, false)
             .with_rating(black_elo)
-            .with_active_turn(!is_white_turn);
+            .with_active_turn(!is_white_turn && !show_bar_badges)
+            .with_result(if show_bar_badges {
+                outcome.as_ref().and_then(|o| o.player_result(false))
+            } else {
+                None
+            });
 
         let (top_player, bottom_player) = if self.board_widget.flipped {
             (&white_player, &black_player)
@@ -172,7 +217,7 @@ impl GameReviewScreen {
             Some(eval_bar),
         );
 
-        let sidebar = self.render_sidebar(game, analysis);
+        let sidebar = self.render_sidebar(game, analysis, outcome.as_ref(), at_last_move);
 
         let content = row![
             board_column,
@@ -270,31 +315,95 @@ impl GameReviewScreen {
         &'a self,
         game: Option<&'a StoredGame>,
         analysis: Option<&'a GameAnalysis>,
+        outcome: Option<&GameOutcome>,
+        at_last_move: bool,
     ) -> Element<'a, GameReviewMessage> {
-        let game_header = match game {
+        let game_header: Element<'a, GameReviewMessage> = match game {
             Some(g) => {
-                let white_title = format!("{} ({})", g.white, g.white_elo.unwrap_or(0));
-                let black_title = format!("{} ({})", g.black, g.black_elo.unwrap_or(0));
-                let meta = format!("{} • {} • Result: {}", g.date, g.opening, g.result);
+                let white_elo_str = g
+                    .white_elo
+                    .map(|e| format!(" ({})", e))
+                    .unwrap_or_default();
+                let black_elo_str = g
+                    .black_elo
+                    .map(|e| format!(" ({})", e))
+                    .unwrap_or_default();
+                let title_str = format!(
+                    "{}{} vs {}{}",
+                    truncate(&g.white, 16),
+                    white_elo_str,
+                    truncate(&g.black, 16),
+                    black_elo_str
+                );
+                let (_, resolved_opening) =
+                    crate::pgn::resolve_opening_display(&g.opening, &g.eco, &g.pgn);
+                let opening_part = if resolved_opening.is_empty() {
+                    "Unknown Opening".to_string()
+                } else {
+                    truncate(&resolved_opening, 36)
+                };
+                let meta = format!("{} • {}", g.date, opening_part);
+
+                let mut title_row = row![
+                    text(title_str)
+                        .font(fonts::UI_BOLD)
+                        .size(type_scale::HEADING)
+                        .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill),
+                ]
+                .spacing(spacing::XS)
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
+
+                if let Some(out) = outcome {
+                    let chip_bg = if out.is_draw() {
+                        Color::from_rgba(210.0 / 255.0, 153.0 / 255.0, 34.0 / 255.0, 0.22)
+                    } else {
+                        Color::from_rgba(46.0 / 255.0, 160.0 / 255.0, 67.0 / 255.0, 0.22)
+                    };
+                    let chip_border = if out.is_draw() {
+                        Color::from_rgba(210.0 / 255.0, 153.0 / 255.0, 34.0 / 255.0, 0.55)
+                    } else {
+                        palette::SUCCESS
+                    };
+                    let chip_fg = if out.is_draw() {
+                        Color::from_rgb8(239, 193, 98)
+                    } else {
+                        Color::from_rgb8(116, 224, 138)
+                    };
+                    let result_chip = container(
+                        text(out.display_result().to_string())
+                            .font(fonts::MONO_BOLD)
+                            .size(type_scale::CAPTION)
+                            .color(chip_fg)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([2.0, 7.0])
+                    .style(move |_theme| container::Style {
+                        background: Some(chip_bg.into()),
+                        border: border::rounded(4.0).width(1.0).color(chip_border),
+                        ..Default::default()
+                    });
+                    title_row = title_row.push(result_chip);
+                }
 
                 column![
-                    text(format!("{} vs {}", white_title, black_title))
-                        .font(fonts::UI_BOLD)
-                        .size(type_scale::TITLE)
-                        .color(palette::TEXT_PRIMARY),
+                    title_row,
                     text(meta)
                         .font(fonts::UI)
-                        .size(type_scale::BODY)
-                        .color(palette::TEXT_SECONDARY),
+                        .size(type_scale::CAPTION)
+                        .color(palette::TEXT_SECONDARY)
+                        .wrapping(text::Wrapping::WordOrGlyph),
                 ]
                 .spacing(spacing::XXS)
+                .into()
             }
-            None => column![
-                text("No Game Selected")
-                    .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::TITLE)
-                    .color(palette::TEXT_MUTED)
-            ],
+            None => column![text("No Game Selected")
+                .font(fonts::UI_SEMIBOLD)
+                .size(type_scale::TITLE)
+                .color(palette::TEXT_MUTED)]
+            .into(),
         };
 
         // Accuracy card
@@ -692,30 +801,58 @@ impl GameReviewScreen {
             }
         }
 
+        if let Some(out) = outcome {
+            if analysis.is_some() || game.is_some() {
+                let end_label = format!("{} · {}", out.result, out.reason);
+                let end_row = container(
+                    text(end_label)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::CAPTION)
+                        .color(palette::TEXT_SECONDARY)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                )
+                .padding([spacing::XS, spacing::XS])
+                .width(Length::Fill)
+                .style(|_theme| container::Style {
+                    background: Some(palette::BG_ELEVATED.into()),
+                    border: border::rounded(spacing::RADIUS)
+                        .width(1.0)
+                        .color(palette::BORDER_SUBTLE),
+                    ..Default::default()
+                });
+                move_rows = move_rows.push(Space::with_height(spacing::XXS)).push(end_row);
+            }
+        }
+
         let move_list_card = container(
             scrollable(move_rows)
                 .height(Length::Fixed(190.0))
-                .width(Length::Fill)
+                .width(Length::Fill),
         )
         .padding(spacing::SM)
         .style(card_container_style);
 
-        column![
+        let mut sidebar_col = column![
             game_header,
             Space::with_height(spacing::XXS),
             accuracy_row,
-            Space::with_height(spacing::XS),
-            nav_section,
-            Space::with_height(spacing::XS),
-            eval_graph,
-            Space::with_height(spacing::XS),
-            current_move_detail,
-            Space::with_height(spacing::XS),
-            move_list_card,
         ]
         .spacing(spacing::XS)
-        .width(Length::Fill)
-        .into()
+        .width(Length::Fill);
+
+        if at_last_move {
+            if let Some(out) = outcome {
+                sidebar_col = sidebar_col.push(render_result_banner(out));
+            }
+        }
+
+        sidebar_col = sidebar_col
+            .push(nav_section)
+            .push(eval_graph)
+            .push(current_move_detail)
+            .push(move_list_card);
+
+        sidebar_col.into()
     }
 }
 

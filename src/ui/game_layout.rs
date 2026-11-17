@@ -1,9 +1,78 @@
 use crate::ui::board::{captured_pieces, captured_tray, BoardMessage, BoardWidget};
-use crate::ui::theme::{fonts, palette, spacing, type_scale};
+use crate::ui::theme::{
+    fonts, icon_flag, icon_handshake, icon_trophy, icon_widget, palette, spacing, truncate,
+    type_scale,
+};
 use iced::border;
 use iced::widget::{column, container, row, text, Space};
 use iced::{Alignment, Color, Element, Length};
 use shakmaty::{Chess, Color as PieceColor, Role};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerResult {
+    Win,
+    Loss,
+    Draw,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutcomeTone {
+    Win,
+    Loss,
+    Draw,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameOutcome {
+    pub result: String, // "1-0", "0-1", "1/2-1/2"
+    pub reason: String,
+}
+
+impl GameOutcome {
+    pub fn new(result: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            result: result.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn display_result(&self) -> &str {
+        if self.result == "1/2-1/2" {
+            "½-½"
+        } else {
+            &self.result
+        }
+    }
+
+    pub fn is_draw(&self) -> bool {
+        self.result == "1/2-1/2"
+    }
+
+    pub fn player_result(&self, is_white: bool) -> Option<PlayerResult> {
+        match self.result.as_str() {
+            "1-0" => Some(if is_white {
+                PlayerResult::Win
+            } else {
+                PlayerResult::Loss
+            }),
+            "0-1" => Some(if is_white {
+                PlayerResult::Loss
+            } else {
+                PlayerResult::Win
+            }),
+            "1/2-1/2" => Some(PlayerResult::Draw),
+            _ => None,
+        }
+    }
+
+    pub fn default_tone(&self) -> OutcomeTone {
+        if self.is_draw() {
+            OutcomeTone::Draw
+        } else {
+            OutcomeTone::Win
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PlayerInfo {
@@ -13,6 +82,7 @@ pub struct PlayerInfo {
     pub status: Option<String>,
     pub is_white: bool,
     pub is_active_turn: bool,
+    pub result: Option<PlayerResult>,
 }
 
 impl PlayerInfo {
@@ -24,6 +94,7 @@ impl PlayerInfo {
             status: None,
             is_white,
             is_active_turn: false,
+            result: None,
         }
     }
 
@@ -46,6 +117,127 @@ impl PlayerInfo {
         self.is_active_turn = active;
         self
     }
+
+    pub fn with_result(mut self, result: Option<PlayerResult>) -> Self {
+        self.result = result;
+        self
+    }
+}
+
+fn render_player_result_badge<'a, Message: 'a>(res: PlayerResult) -> Element<'a, Message> {
+    let (bg, border_color, text_color, icon, score_label) = match res {
+        PlayerResult::Win => (
+            Color::from_rgba(46.0 / 255.0, 160.0 / 255.0, 67.0 / 255.0, 0.22),
+            palette::SUCCESS,
+            Color::from_rgb8(116, 224, 138),
+            icon_trophy(),
+            "1",
+        ),
+        PlayerResult::Loss => (
+            Color::from_rgba(218.0 / 255.0, 54.0 / 255.0, 51.0 / 255.0, 0.18),
+            Color::from_rgba(218.0 / 255.0, 54.0 / 255.0, 51.0 / 255.0, 0.55),
+            Color::from_rgb8(242, 139, 137),
+            icon_flag(),
+            "0",
+        ),
+        PlayerResult::Draw => (
+            Color::from_rgba(210.0 / 255.0, 153.0 / 255.0, 34.0 / 255.0, 0.20),
+            Color::from_rgba(210.0 / 255.0, 153.0 / 255.0, 34.0 / 255.0, 0.55),
+            Color::from_rgb8(239, 193, 98),
+            icon_handshake(),
+            "½",
+        ),
+    };
+
+    container(
+        row![
+            icon_widget(icon, 11.0, Some(text_color)),
+            text(score_label)
+                .font(fonts::MONO_BOLD)
+                .size(11.0)
+                .color(text_color),
+        ]
+        .spacing(3.0)
+        .align_y(Alignment::Center),
+    )
+    .padding([2.0, 6.0])
+    .style(move |_theme| container::Style {
+        background: Some(bg.into()),
+        border: border::rounded(4.0).width(1.0).color(border_color),
+        ..Default::default()
+    })
+    .into()
+}
+
+pub fn render_result_banner<'a, Message: 'a>(outcome: &GameOutcome) -> Element<'a, Message> {
+    render_result_banner_with_tone(outcome, outcome.default_tone())
+}
+
+pub fn render_result_banner_with_tone<'a, Message: 'a>(
+    outcome: &GameOutcome,
+    tone: OutcomeTone,
+) -> Element<'a, Message> {
+    let (bg, border_color, accent_color, icon) = match tone {
+        OutcomeTone::Win => (
+            Color::from_rgba(46.0 / 255.0, 160.0 / 255.0, 67.0 / 255.0, 0.16),
+            Color::from_rgba(46.0 / 255.0, 160.0 / 255.0, 67.0 / 255.0, 0.50),
+            Color::from_rgb8(116, 224, 138),
+            icon_trophy(),
+        ),
+        OutcomeTone::Loss => (
+            Color::from_rgba(218.0 / 255.0, 54.0 / 255.0, 51.0 / 255.0, 0.16),
+            Color::from_rgba(218.0 / 255.0, 54.0 / 255.0, 51.0 / 255.0, 0.50),
+            Color::from_rgb8(242, 139, 137),
+            icon_flag(),
+        ),
+        OutcomeTone::Draw => (
+            Color::from_rgba(210.0 / 255.0, 153.0 / 255.0, 34.0 / 255.0, 0.16),
+            Color::from_rgba(210.0 / 255.0, 153.0 / 255.0, 34.0 / 255.0, 0.45),
+            Color::from_rgb8(239, 193, 98),
+            icon_handshake(),
+        ),
+    };
+
+    let score_pill = container(
+        text(outcome.display_result().to_string())
+            .font(fonts::MONO_BOLD)
+            .size(type_scale::BODY)
+            .color(accent_color),
+    )
+    .padding([2.0, 8.0])
+    .style(move |_theme| container::Style {
+        background: Some(palette::BG_BASE.into()),
+        border: border::rounded(4.0).width(1.0).color(border_color),
+        ..Default::default()
+    });
+
+    let reason_text = text(outcome.reason.clone())
+        .font(fonts::UI_SEMIBOLD)
+        .size(type_scale::BODY)
+        .color(palette::TEXT_PRIMARY)
+        .wrapping(text::Wrapping::WordOrGlyph)
+        .width(Length::Fill);
+
+    container(
+        row![
+            icon_widget(icon, 16.0, Some(accent_color)),
+            score_pill,
+            reason_text,
+        ]
+        .spacing(spacing::XS)
+        .align_y(Alignment::Center)
+        .width(Length::Fill),
+    )
+    .padding([spacing::XS, spacing::SM])
+    .width(Length::Fill)
+    .style(move |_theme| container::Style {
+        background: Some(bg.into()),
+        border: border::rounded(spacing::RADIUS)
+            .width(1.0)
+            .color(border_color),
+        ..Default::default()
+    })
+    .into()
 }
 
 fn render_player_bar_with_width<'a, Message: 'a>(
@@ -91,19 +283,21 @@ fn render_player_bar_with_width<'a, Message: 'a>(
     let mut info_row = row![
         avatar_circle,
         Space::with_width(spacing::XS),
-        text(player.name.clone())
+        text(truncate(&player.name, 20))
             .font(fonts::UI_BOLD)
             .size(type_scale::BODY)
-            .color(palette::TEXT_PRIMARY),
+            .color(palette::TEXT_PRIMARY)
+            .wrapping(text::Wrapping::None),
     ]
     .align_y(Alignment::Center);
 
     if let Some(ref title) = player.title {
         let title_badge = container(
-            text(title.clone())
+            text(truncate(title, 12))
                 .font(fonts::MONO_BOLD)
                 .size(10.0)
-                .color(palette::TEXT_PRIMARY),
+                .color(palette::TEXT_PRIMARY)
+                .wrapping(text::Wrapping::None),
         )
         .padding([2.0, 5.0])
         .style(|_theme| container::Style {
@@ -118,11 +312,12 @@ fn render_player_bar_with_width<'a, Message: 'a>(
         let rating_text = text(format!("({})", rating))
             .font(fonts::MONO_BOLD)
             .size(type_scale::CAPTION)
-            .color(palette::TEXT_SECONDARY);
+            .color(palette::TEXT_SECONDARY)
+            .wrapping(text::Wrapping::None);
         info_row = info_row.push(Space::with_width(spacing::XXS)).push(rating_text);
     }
 
-    if player.is_active_turn {
+    if player.is_active_turn && player.result.is_none() {
         let turn_dot = container(Space::with_width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
             .style(|_theme| container::Style {
                 background: Some(palette::SUCCESS.into()),
@@ -133,19 +328,28 @@ fn render_player_bar_with_width<'a, Message: 'a>(
     }
 
     if let Some(ref status) = player.status {
-        let status_lbl = text(status.clone())
+        let status_lbl = text(truncate(status, 18))
             .font(fonts::UI)
             .size(type_scale::CAPTION)
-            .color(palette::TEXT_MUTED);
+            .color(palette::TEXT_MUTED)
+            .wrapping(text::Wrapping::None);
         info_row = info_row.push(Space::with_width(spacing::XS)).push(status_lbl);
     }
 
-    let tray = captured_tray(captured, captured_color, material_lead, 18.0);
+    let tray = captured_tray(captured, captured_color, material_lead, 16.0);
+
+    let mut right_row = row![container(tray).clip(true)]
+        .spacing(spacing::XS)
+        .align_y(Alignment::Center);
+
+    if let Some(res) = player.result {
+        right_row = right_row.push(render_player_result_badge(res));
+    }
 
     let content = row![
-        info_row,
-        Space::with_width(Length::Fill),
-        tray,
+        container(info_row).width(Length::Fill).clip(true),
+        Space::with_width(spacing::XS),
+        right_row,
     ]
     .align_y(Alignment::Center)
     .width(Length::Fill);
@@ -153,6 +357,7 @@ fn render_player_bar_with_width<'a, Message: 'a>(
     container(content)
         .padding([6.0, 10.0])
         .width(bar_width)
+        .clip(true)
         .style(|_theme| container::Style {
             background: Some(palette::BG_SURFACE.into()),
             border: border::rounded(6.0).width(1.0).color(palette::BORDER_SUBTLE),
@@ -162,7 +367,7 @@ fn render_player_bar_with_width<'a, Message: 'a>(
 }
 
 /// Renders a Chess.com-style Player Bar above or below the board:
-/// [Avatar/Color Badge] [Player Name] [Title] [Elo Rating] [Status / Active Indicator]  ...  [Captured Pieces Tray] [+Lead]
+/// [Avatar/Color Badge] [Player Name] [Title] [Elo Rating] [Status / Active Indicator]  ...  [Captured Pieces Tray] [+Lead] [Result Badge]
 pub fn render_player_bar<'a, Message: 'a>(
     player: &PlayerInfo,
     captured: &[Role],
