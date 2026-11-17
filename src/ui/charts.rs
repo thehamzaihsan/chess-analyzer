@@ -445,6 +445,14 @@ impl EvalGraphWidget {
     }
 }
 
+pub fn eval_graph_ply_from_x(x: f32, width: f32, num_evals: usize) -> Option<usize> {
+    if num_evals == 0 || width <= 0.0 {
+        return None;
+    }
+    let rel_x = (x / width).clamp(0.0, 1.0);
+    Some((rel_x * num_evals as f32).round().clamp(0.0, num_evals as f32) as usize)
+}
+
 impl Program<EvalGraphMessage> for EvalGraphWidget {
     type State = ();
 
@@ -455,20 +463,32 @@ impl Program<EvalGraphMessage> for EvalGraphWidget {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> (Status, Option<EvalGraphMessage>) {
-        if self.evaluations.is_empty() {
+        if self.evaluations.is_empty() || bounds.width <= 0.0 {
             return (Status::Ignored, None);
         }
 
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
             if let Some(pos) = cursor.position_in(bounds) {
-                let n = self.evaluations.len();
-                let rel_x = (pos.x / bounds.width).clamp(0.0, 1.0);
-                let ply = ((rel_x * n as f32).floor() as usize).clamp(0, n);
-                return (Status::Captured, Some(EvalGraphMessage::SelectPly(ply)));
+                if let Some(ply) = eval_graph_ply_from_x(pos.x, bounds.width, self.evaluations.len()) {
+                    return (Status::Captured, Some(EvalGraphMessage::SelectPly(ply)));
+                }
             }
         }
 
         (Status::Ignored, None)
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if !self.evaluations.is_empty() && cursor.is_over(bounds) {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::default()
+        }
     }
 
     fn draw(
@@ -499,7 +519,7 @@ impl Program<EvalGraphMessage> for EvalGraphWidget {
                 .with_width(1.0),
         );
 
-        if self.evaluations.is_empty() {
+        if self.evaluations.is_empty() || bounds.width <= 0.0 {
             return vec![frame.into_geometry()];
         }
 
@@ -535,11 +555,12 @@ impl Program<EvalGraphMessage> for EvalGraphWidget {
 
         // Draw cursor line for current move
         if self.current_ply <= n {
-            let cur_x = if n > 0 {
+            let raw_x = if n > 0 {
                 (self.current_ply as f32 / n as f32) * bounds.width
             } else {
                 0.0
             };
+            let cur_x = raw_x.clamp(1.0, (bounds.width - 1.0).max(1.0));
 
             let cur_line = Path::line(Point::new(cur_x, 0.0), Point::new(cur_x, bounds.height));
             frame.stroke(
@@ -551,5 +572,33 @@ impl Program<EvalGraphMessage> for EvalGraphWidget {
         }
 
         vec![frame.into_geometry()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::eval_graph_ply_from_x;
+
+    #[test]
+    fn test_eval_graph_ply_mapping_across_widths() {
+        assert_eq!(eval_graph_ply_from_x(10.0, 100.0, 0), None);
+        assert_eq!(eval_graph_ply_from_x(10.0, 0.0, 10), None);
+
+        // At width 400 with 40 plies, cursor for ply k sits at (k / 40) * 400 = 10 * k
+        for width in [300.0_f32, 480.0, 720.0] {
+            let n = 40;
+            assert_eq!(eval_graph_ply_from_x(0.0, width, n), Some(0));
+            assert_eq!(eval_graph_ply_from_x(width, width, n), Some(n));
+            for ply in 0..=n {
+                let cursor_x = (ply as f32 / n as f32) * width;
+                assert_eq!(
+                    eval_graph_ply_from_x(cursor_x, width, n),
+                    Some(ply),
+                    "mismatch for ply {} at width {}",
+                    ply,
+                    width
+                );
+            }
+        }
     }
 }
