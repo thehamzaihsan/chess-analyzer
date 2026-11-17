@@ -1389,7 +1389,10 @@ impl App {
             .and_then(|id| self.analyses.get(&id));
 
         let main_view: Element<'_, AppMessage> = match self.active_tab {
-            Tab::Import => self.import_screen.view(&self.games).map(AppMessage::Import),
+            Tab::Import => self
+                .import_screen
+                .view(&self.games, &self.analyses)
+                .map(AppMessage::Import),
             Tab::GameReview => self
                 .game_review_screen
                 .view(current_game, current_analysis)
