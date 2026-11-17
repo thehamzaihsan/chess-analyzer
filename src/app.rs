@@ -1,11 +1,13 @@
 use crate::analysis::{analyze_game, GameAnalysis};
 use crate::chesscom::ChessComClient;
 use crate::coach::CoachClient;
-use crate::db::{Database, Puzzle, StoredGame};
+use crate::db::{Database, StoredGame};
 use crate::engine::uci::{discover_engine_path, UciEngine, UciEval};
 use crate::engine::EnginePool;
 use crate::insights::{compute_insights, OverallInsights};
 use crate::pgn::parse_pgn_games;
+use crate::puzzle_mining::{mine_puzzles_from_analysis, mine_puzzles_from_games};
+use crate::puzzles_seed::seed_bundled_lichess_puzzles_if_needed;
 use crate::ui::board::BoardMessage;
 use crate::ui::bots::{BotMessage, BotPlayScreen, BOTS};
 use crate::ui::explorer::{ExplorerMessage, ExplorerScreen};
@@ -63,6 +65,7 @@ pub enum AppMessage {
     AllGamesAnalyzed,
     CoachExplanationReceived(Result<String, String>),
     BotEngineMoveFound(u64, Result<String, String>),
+    LichessPuzzlesSeeded(Result<usize, String>),
 }
 
 pub struct App {
@@ -127,6 +130,9 @@ impl App {
             .collect();
         let insights = compute_insights(&default_username, &initial_games, &analyses_vec);
 
+        // Backfill blunder & mistake puzzles from all stored analyses for the tracked player.
+        let _ = mine_puzzles_from_games(&db, &initial_games, &analyses, &default_username);
+
         let mut app = Self {
             active_tab: Tab::Import,
             sidebar_collapsed: false,
@@ -164,7 +170,18 @@ impl App {
         app.import_screen.username_input = default_username.clone();
         app.import_screen.active_player_filter = Some(default_username);
 
-        (app, Task::none())
+        let seed_db = Arc::clone(&db);
+        let seed_task = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || seed_bundled_lichess_puzzles_if_needed(&seed_db))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())
+            },
+            AppMessage::LichessPuzzlesSeeded,
+        );
+
+        (app, seed_task)
     }
 
     pub fn theme(&self) -> Theme {
@@ -294,7 +311,12 @@ impl App {
                 if tab == Tab::Insights {
                     self.recompute_insights();
                 } else if tab == Tab::Puzzles && self.puzzle_screen.current_puzzle.is_none() {
-                    if let Ok(Some(p)) = self.db.get_random_puzzle(self.puzzle_screen.filter.as_deref()) {
+                    let target_rating = (self.insights.current_rating > 0)
+                        .then_some(self.insights.current_rating);
+                    if let Ok(Some(p)) = self
+                        .db
+                        .get_next_puzzle(self.puzzle_screen.filter.as_deref(), target_rating)
+                    {
                         self.puzzle_screen.load_puzzle(p);
                     }
                 } else if tab == Tab::GameReview && self.selected_game_id.is_none() {
@@ -679,6 +701,19 @@ impl App {
                 if let Some(g) = self.games.iter_mut().find(|g| g.id == game_id) {
                     g.accuracy_white = Some(analysis.white_accuracy);
                     g.accuracy_black = Some(analysis.black_accuracy);
+                    let _ = mine_puzzles_from_analysis(
+                        &self.db,
+                        g,
+                        &analysis,
+                        &self.player_username,
+                    );
+                } else if let Ok(Some(g)) = self.db.get_game(game_id) {
+                    let _ = mine_puzzles_from_analysis(
+                        &self.db,
+                        &g,
+                        &analysis,
+                        &self.player_username,
+                    );
                 }
 
                 let _ = self.db.save_analysis(game_id, &analysis);
@@ -801,6 +836,23 @@ impl App {
                 self.import_screen.status_message = Some("All games analyzed!".to_string());
                 Task::none()
             }
+            AppMessage::LichessPuzzlesSeeded(Ok(seeded)) => {
+                if seeded > 0
+                    && self.active_tab == Tab::Puzzles
+                    && self.puzzle_screen.current_puzzle.is_none()
+                {
+                    let target_rating =
+                        (self.insights.current_rating > 0).then_some(self.insights.current_rating);
+                    if let Ok(Some(p)) = self
+                        .db
+                        .get_next_puzzle(self.puzzle_screen.filter.as_deref(), target_rating)
+                    {
+                        self.puzzle_screen.load_puzzle(p);
+                    }
+                }
+                Task::none()
+            }
+            AppMessage::LichessPuzzlesSeeded(Err(_)) => Task::none(),
 
             // --- Game Review Messages ---
             AppMessage::GameReview(GameReviewMessage::Board(bm)) => {
@@ -994,7 +1046,12 @@ impl App {
                 Task::none()
             }
             AppMessage::Puzzle(PuzzleMessage::NextPuzzle) => {
-                if let Ok(Some(p)) = self.db.get_random_puzzle(self.puzzle_screen.filter.as_deref()) {
+                let target_rating =
+                    (self.insights.current_rating > 0).then_some(self.insights.current_rating);
+                if let Ok(Some(p)) = self
+                    .db
+                    .get_next_puzzle(self.puzzle_screen.filter.as_deref(), target_rating)
+                {
                     self.puzzle_screen.load_puzzle(p);
                 } else {
                     self.puzzle_screen.puzzle_status =
@@ -1003,57 +1060,12 @@ impl App {
                 Task::none()
             }
             AppMessage::Puzzle(PuzzleMessage::MineBlunderPuzzles) => {
-                let mut mined = 0usize;
-                for (game_id, analysis) in &self.analyses {
-                    for m in &analysis.moves {
-                        if m.classification == crate::analysis::MoveClassification::Blunder {
-                            if let Some(best) =
-                                m.eval_before.as_ref().and_then(|e| e.best_move.clone())
-                            {
-                                let best_trimmed = best.trim();
-                                if best_trimmed.is_empty() || best_trimmed == "(none)" {
-                                    continue;
-                                }
-                                let is_legal = m
-                                    .fen_before
-                                    .parse::<shakmaty::fen::Fen>()
-                                    .ok()
-                                    .and_then(|f| {
-                                        f.into_position::<shakmaty::Chess>(
-                                            shakmaty::CastlingMode::Standard,
-                                        )
-                                        .ok()
-                                    })
-                                    .and_then(|pos| {
-                                        best_trimmed
-                                            .parse::<shakmaty::uci::UciMove>()
-                                            .ok()
-                                            .and_then(|u| u.to_move(&pos).ok())
-                                    })
-                                    .is_some();
-                                if !is_legal {
-                                    continue;
-                                }
-
-                                let p = Puzzle {
-                                    id: format!("blunder_{}_{}", game_id, m.ply),
-                                    fen: m.fen_before.clone(),
-                                    moves: best_trimmed.to_string(),
-                                    rating: 1500,
-                                    rating_deviation: 100,
-                                    popularity: 100,
-                                    nb_plays: 1,
-                                    themes: "blunder-recovery".to_string(),
-                                    opening_tags: "".to_string(),
-                                    source: "blunder".to_string(),
-                                };
-                                if let Ok(true) = self.db.insert_puzzle_if_new(&p) {
-                                    mined += 1;
-                                }
-                            }
-                        }
-                    }
-                }
+                let mined = mine_puzzles_from_games(
+                    &self.db,
+                    &self.games,
+                    &self.analyses,
+                    &self.player_username,
+                );
                 self.puzzle_screen.puzzle_status = if mined == 0 {
                     "No new blunder puzzles mined (all valid blunders already in database)."
                         .to_string()
@@ -1064,7 +1076,12 @@ impl App {
             }
             AppMessage::Puzzle(PuzzleMessage::SelectFilter(f)) => {
                 self.puzzle_screen.filter = f;
-                if let Ok(Some(p)) = self.db.get_random_puzzle(self.puzzle_screen.filter.as_deref()) {
+                let target_rating =
+                    (self.insights.current_rating > 0).then_some(self.insights.current_rating);
+                if let Ok(Some(p)) = self
+                    .db
+                    .get_next_puzzle(self.puzzle_screen.filter.as_deref(), target_rating)
+                {
                     self.puzzle_screen.load_puzzle(p);
                 } else {
                     self.puzzle_screen.current_puzzle = None;

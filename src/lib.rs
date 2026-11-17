@@ -8,4 +8,6 @@ pub mod engine;
 pub mod insights;
 pub mod openings;
 pub mod pgn;
+pub mod puzzle_mining;
+pub mod puzzles_seed;
 pub mod ui;

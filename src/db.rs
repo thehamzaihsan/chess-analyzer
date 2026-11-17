@@ -46,6 +46,16 @@ pub struct Puzzle {
     pub source: String, // "blunder" or "lichess"
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PuzzleAttempt {
+    pub puzzle_id: String,
+    pub seen_count: i64,
+    pub attempts: i64,
+    pub solved_count: i64,
+    pub failed_count: i64,
+    pub last_solved: Option<bool>,
+}
+
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
@@ -123,6 +133,19 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_puzzles_rating ON puzzles(rating);
             CREATE INDEX IF NOT EXISTS idx_puzzles_source ON puzzles(source);
+
+            CREATE TABLE IF NOT EXISTS puzzle_attempts (
+                puzzle_id TEXT PRIMARY KEY,
+                seen_count INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                solved_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                last_solved INTEGER,
+                last_seen_at INTEGER NOT NULL DEFAULT 0,
+                last_attempted_at INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_puzzle_attempts_seen ON puzzle_attempts(seen_count, last_seen_at);
 
             CREATE TABLE IF NOT EXISTS sessions (
                 key TEXT PRIMARY KEY,
@@ -379,7 +402,144 @@ impl Database {
         Ok(rows > 0)
     }
 
-    pub fn get_random_puzzle(&self, source_filter: Option<&str>) -> Result<Option<Puzzle>> {
+    /// Imports a slice of puzzles in a single SQLite transaction, optionally
+    /// updating a seed version key in `sessions` atomically.
+    pub fn import_puzzles_batch(
+        &self,
+        puzzles: &[Puzzle],
+        seed_version: Option<(&str, &str)>,
+    ) -> Result<usize> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT OR REPLACE INTO puzzles (id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes, opening_tags, source)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "#,
+            )?;
+            for puzzle in puzzles {
+                stmt.execute(params![
+                    puzzle.id,
+                    puzzle.fen,
+                    puzzle.moves,
+                    puzzle.rating,
+                    puzzle.rating_deviation,
+                    puzzle.popularity,
+                    puzzle.nb_plays,
+                    puzzle.themes,
+                    puzzle.opening_tags,
+                    puzzle.source
+                ])?;
+            }
+        }
+        if let Some((key, val)) = seed_version {
+            tx.execute(
+                "INSERT OR REPLACE INTO sessions (key, value) VALUES (?1, ?2)",
+                params![key, val],
+            )?;
+        }
+        tx.commit()?;
+        Ok(puzzles.len())
+    }
+
+    pub fn count_puzzles_by_source(&self, source: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: usize = conn.query_row(
+            "SELECT count(*) FROM puzzles WHERE source = ?1",
+            params![source],
+            |r| r.get(0),
+        )?;
+        Ok(count)
+    }
+
+    fn next_puzzle_seq(conn: &Connection) -> Result<i64> {
+        let seq: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(last_seen_at), 0) + 1 FROM puzzle_attempts",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(seq)
+    }
+
+    fn mark_puzzle_seen_conn(conn: &Connection, puzzle_id: &str) -> Result<()> {
+        let seq = Self::next_puzzle_seq(conn)?;
+        conn.execute(
+            r#"
+            INSERT INTO puzzle_attempts (puzzle_id, seen_count, last_seen_at)
+            VALUES (?1, 1, ?2)
+            ON CONFLICT(puzzle_id) DO UPDATE SET
+                seen_count = puzzle_attempts.seen_count + 1,
+                last_seen_at = excluded.last_seen_at
+            "#,
+            params![puzzle_id, seq],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a puzzle as seen so subsequent selections prefer unseen puzzles.
+    pub fn mark_puzzle_seen(&self, puzzle_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        Self::mark_puzzle_seen_conn(&conn, puzzle_id)
+    }
+
+    /// Records a solved or failed puzzle attempt for future selection and UI tracking.
+    pub fn record_puzzle_attempt(&self, puzzle_id: &str, solved: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let seq = Self::next_puzzle_seq(&conn)?;
+        let solved_inc: i64 = if solved { 1 } else { 0 };
+        let failed_inc: i64 = if solved { 0 } else { 1 };
+        let last_solved_val: i64 = if solved { 1 } else { 0 };
+        conn.execute(
+            r#"
+            INSERT INTO puzzle_attempts (
+                puzzle_id, seen_count, attempts, solved_count, failed_count,
+                last_solved, last_seen_at, last_attempted_at
+            )
+            VALUES (?1, 1, 1, ?2, ?3, ?4, ?5, ?5)
+            ON CONFLICT(puzzle_id) DO UPDATE SET
+                seen_count = MAX(puzzle_attempts.seen_count, 1),
+                attempts = puzzle_attempts.attempts + 1,
+                solved_count = puzzle_attempts.solved_count + excluded.solved_count,
+                failed_count = puzzle_attempts.failed_count + excluded.failed_count,
+                last_solved = excluded.last_solved,
+                last_seen_at = excluded.last_seen_at,
+                last_attempted_at = excluded.last_attempted_at
+            "#,
+            params![puzzle_id, solved_inc, failed_inc, last_solved_val, seq],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_puzzle_attempt(&self, puzzle_id: &str) -> Result<Option<PuzzleAttempt>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT puzzle_id, seen_count, attempts, solved_count, failed_count, last_solved FROM puzzle_attempts WHERE puzzle_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![puzzle_id])?;
+        if let Some(row) = rows.next()? {
+            let last_solved_raw: Option<i64> = row.get(5)?;
+            Ok(Some(PuzzleAttempt {
+                puzzle_id: row.get(0)?,
+                seen_count: row.get(1)?,
+                attempts: row.get(2)?,
+                solved_count: row.get(3)?,
+                failed_count: row.get(4)?,
+                last_solved: last_solved_raw.map(|v| v != 0),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Selects the next puzzle matching `source_filter` while avoiding repeats
+    /// (unseen puzzles first, then unsolved least-recently-seen, then solved
+    /// least-recently-seen) and optionally preferring puzzles near `target_rating`.
+    pub fn get_next_puzzle(
+        &self,
+        source_filter: Option<&str>,
+        target_rating: Option<i32>,
+    ) -> Result<Option<Puzzle>> {
         let conn = self.conn.lock().unwrap();
         let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Puzzle> {
             Ok(Puzzle {
@@ -396,27 +556,62 @@ impl Database {
             })
         };
 
-        if let Some(src) = source_filter {
+        let selected = if let Some(src) = source_filter {
             let mut stmt = conn.prepare(
-                "SELECT id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes, opening_tags, source FROM puzzles WHERE source = ?1 ORDER BY RANDOM() LIMIT 1",
+                r#"
+                SELECT p.id, p.fen, p.moves, p.rating, p.rating_deviation, p.popularity, p.nb_plays, p.themes, p.opening_tags, p.source
+                FROM puzzles p
+                LEFT JOIN puzzle_attempts pa ON pa.puzzle_id = p.id
+                WHERE p.source = ?1
+                ORDER BY
+                    (pa.puzzle_id IS NULL) DESC,
+                    (COALESCE(pa.solved_count, 0) = 0) DESC,
+                    COALESCE(pa.seen_count, 0) ASC,
+                    COALESCE(pa.last_seen_at, 0) ASC,
+                    CASE WHEN ?2 IS NOT NULL THEN (ABS(p.rating - ?2) / 100) ELSE 0 END ASC,
+                    RANDOM()
+                LIMIT 1
+                "#,
             )?;
-            let mut rows = stmt.query(params![src])?;
+            let mut rows = stmt.query(params![src, target_rating])?;
             if let Some(row) = rows.next()? {
-                Ok(Some(map_row(row)?))
+                Some(map_row(row)?)
             } else {
-                Ok(None)
+                None
             }
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes, opening_tags, source FROM puzzles ORDER BY RANDOM() LIMIT 1",
+                r#"
+                SELECT p.id, p.fen, p.moves, p.rating, p.rating_deviation, p.popularity, p.nb_plays, p.themes, p.opening_tags, p.source
+                FROM puzzles p
+                LEFT JOIN puzzle_attempts pa ON pa.puzzle_id = p.id
+                ORDER BY
+                    (pa.puzzle_id IS NULL) DESC,
+                    (COALESCE(pa.solved_count, 0) = 0) DESC,
+                    COALESCE(pa.seen_count, 0) ASC,
+                    COALESCE(pa.last_seen_at, 0) ASC,
+                    CASE WHEN ?1 IS NOT NULL THEN (ABS(p.rating - ?1) / 100) ELSE 0 END ASC,
+                    RANDOM()
+                LIMIT 1
+                "#,
             )?;
-            let mut rows = stmt.query([])?;
+            let mut rows = stmt.query(params![target_rating])?;
             if let Some(row) = rows.next()? {
-                Ok(Some(map_row(row)?))
+                Some(map_row(row)?)
             } else {
-                Ok(None)
+                None
             }
+        };
+
+        if let Some(ref puzzle) = selected {
+            Self::mark_puzzle_seen_conn(&conn, &puzzle.id)?;
         }
+
+        Ok(selected)
+    }
+
+    pub fn get_random_puzzle(&self, source_filter: Option<&str>) -> Result<Option<Puzzle>> {
+        self.get_next_puzzle(source_filter, None)
     }
 
     pub fn get_puzzle_count(&self) -> Result<(usize, usize)> {
@@ -458,6 +653,22 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    fn make_puzzle(id: &str, rating: i32, source: &str) -> Puzzle {
+        Puzzle {
+            id: id.to_string(),
+            fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1".to_string(),
+            moves: "e7e5 g1f3".to_string(),
+            rating,
+            rating_deviation: 80,
+            popularity: 95,
+            nb_plays: 1000,
+            themes: "fork".to_string(),
+            opening_tags: "".to_string(),
+            source: source.to_string(),
+        }
+    }
 
     #[test]
     fn insert_puzzle_if_new_reports_only_new_rows() {
@@ -483,5 +694,59 @@ mod tests {
         let fetched = db.get_random_puzzle(Some("blunder")).unwrap().unwrap();
         assert_eq!(fetched.id, puzzle.id);
         assert!(db.get_random_puzzle(Some("lichess")).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_next_puzzle_avoids_repeats_and_prefers_unsolved_then_lru() {
+        let db = Database::memory().unwrap();
+        let puzzles = vec![
+            make_puzzle("p1", 1500, "lichess"),
+            make_puzzle("p2", 1500, "lichess"),
+            make_puzzle("p3", 1500, "lichess"),
+        ];
+        db.import_puzzles_batch(&puzzles, None).unwrap();
+
+        // First 3 selections must return all 3 distinct puzzles without repeats.
+        let mut first_round = HashSet::new();
+        for _ in 0..3 {
+            let p = db.get_next_puzzle(Some("lichess"), None).unwrap().unwrap();
+            assert!(first_round.insert(p.id), "repeated puzzle before unseen exhausted");
+        }
+        assert_eq!(first_round.len(), 3);
+
+        // Mark p1 and p2 as solved, leave p3 failed/unsolved.
+        db.record_puzzle_attempt("p1", true).unwrap();
+        db.record_puzzle_attempt("p2", true).unwrap();
+        db.record_puzzle_attempt("p3", false).unwrap();
+
+        let att_p3 = db.get_puzzle_attempt("p3").unwrap().unwrap();
+        assert_eq!(att_p3.attempts, 1);
+        assert_eq!(att_p3.solved_count, 0);
+        assert_eq!(att_p3.failed_count, 1);
+        assert_eq!(att_p3.last_solved, Some(false));
+
+        // Next selection must prefer unsolved p3 over solved p1/p2.
+        let next = db.get_next_puzzle(Some("lichess"), None).unwrap().unwrap();
+        assert_eq!(next.id, "p3");
+    }
+
+    #[test]
+    fn get_next_puzzle_prefers_target_rating_band() {
+        let db = Database::memory().unwrap();
+        let puzzles = vec![
+            make_puzzle("low", 800, "lichess"),
+            make_puzzle("mid", 1520, "lichess"),
+            make_puzzle("high", 2300, "lichess"),
+        ];
+        db.import_puzzles_batch(&puzzles, None).unwrap();
+
+        let p = db.get_next_puzzle(Some("lichess"), Some(1500)).unwrap().unwrap();
+        assert_eq!(p.id, "mid");
+
+        let p2 = db.get_next_puzzle(Some("lichess"), Some(2280)).unwrap().unwrap();
+        assert_eq!(p2.id, "high");
+
+        let p3 = db.get_next_puzzle(Some("lichess"), Some(850)).unwrap().unwrap();
+        assert_eq!(p3.id, "low");
     }
 }
