@@ -18,7 +18,8 @@ Rust app at the repo root is the active implementation.
 - [`rusqlite`](https://github.com/rusqlite/rusqlite) (bundled) — games, eval cache, puzzles
 - Stockfish, spoken to over UCI as a subprocess — engine analysis and Elo-limited bots
 - A local Gemma GGUF model run via a bundled llama.cpp runtime — the mistake-explainer coach
-- Piece art: Lichess's cburnett set (CC BY-SA, see `assets/pieces/cburnett/LICENSE`). Nav icons:
+- Piece art: Lichess's cardinal set (CC BY-NC-SA 4.0 by sadsnake1, see `assets/pieces/cardinal/LICENSE`),
+  with cburnett retained as a fallback (CC BY-SA 3.0, see `assets/pieces/cburnett/LICENSE`). Nav icons:
   [Lucide](https://lucide.dev/) (ISC, see `assets/icons/lucide/LICENSE`)
 
 ## Setup
