@@ -1,5 +1,5 @@
 use crate::engine::UciEval;
-use crate::openings::identify_opening;
+use crate::openings::{identify_opening, OPENING_BOOK};
 use crate::pgn::ParsedMove;
 use serde::{Deserialize, Serialize};
 use shakmaty::{Chess, Position, Role, Square};
@@ -196,7 +196,33 @@ pub fn determine_game_phase(ply: usize, pos: &Chess) -> GamePhase {
     }
 }
 
+/// Returns the number of leading plies matched in `OPENING_BOOK` (0 if no line matches).
+pub fn matched_opening_ply_count(san_moves: &[String]) -> usize {
+    OPENING_BOOK
+        .iter()
+        .filter(|entry| {
+            entry.moves.len() <= san_moves.len()
+                && entry
+                    .moves
+                    .iter()
+                    .enumerate()
+                    .all(|(idx, &m)| san_moves[idx] == m)
+        })
+        .map(|entry| entry.moves.len())
+        .max()
+        .unwrap_or(0)
+}
+
 /// Run full post-game analysis on parsed moves with provided evaluations.
+///
+/// Contract for `evals`:
+/// `evals` must have `moves.len() + 1` entries ordered by position:
+/// - `evals[0]` is the evaluation of the position BEFORE `moves[0]` (`moves[0].fen_before`).
+/// - `evals[i + 1]` is the evaluation of the position AFTER `moves[i]` (`moves[i].fen_after`).
+///
+/// If `evals` is shorter than `moves.len() + 1` or contains `None` entries, any move
+/// missing `eval_before` or `eval_after` defaults to `0.0` loss rather than comparing
+/// against a synthetic 50% evaluation.
 pub fn analyze_game(
     moves: &[ParsedMove],
     evals: &[Option<UciEval>],
@@ -219,6 +245,7 @@ pub fn analyze_game(
 
     let sans: Vec<String> = moves.iter().map(|m| m.san.clone()).collect();
     let opening_match = identify_opening(&sans);
+    let book_plies = matched_opening_ply_count(&sans);
 
     let mut current_pos = Chess::default();
 
@@ -232,22 +259,33 @@ pub fn analyze_game(
         let win_prob_before = eval_before.as_ref().map_or(50.0, |e| {
             centipawns_to_win_prob(e.score_cp, e.mate_in)
         });
-        let win_prob_after = eval_after.as_ref().map_or(50.0, |e| {
-            centipawns_to_win_prob(e.score_cp, e.mate_in)
-        });
+        let win_prob_after = eval_after.as_ref().map_or(
+            if eval_before.is_some() {
+                win_prob_before
+            } else {
+                50.0
+            },
+            |e| centipawns_to_win_prob(e.score_cp, e.mate_in),
+        );
 
-        let is_book = i < 8 && !opening_match.name.is_empty();
+        let is_book = i < book_plies;
         let best_move = eval_before.as_ref().and_then(|e| e.best_move.as_deref());
 
-        let (classification, loss) = classify_move(
-            is_white,
-            &m.san,
-            &m.uci,
-            best_move,
-            win_prob_before,
-            win_prob_after,
-            is_book,
-        );
+        let (classification, loss) = if is_book {
+            (MoveClassification::Book, 0.0)
+        } else if eval_before.is_none() || eval_after.is_none() {
+            (MoveClassification::Good, 0.0)
+        } else {
+            classify_move(
+                is_white,
+                &m.san,
+                &m.uci,
+                best_move,
+                win_prob_before,
+                win_prob_after,
+                false,
+            )
+        };
 
         if is_white {
             white_losses.push(loss);
