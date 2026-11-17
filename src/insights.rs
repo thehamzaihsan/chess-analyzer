@@ -405,6 +405,12 @@ pub fn compute_insights(
     };
 
     // Rating Progression Statistics
+    // Games arrive newest-first; the rating chart and "current rating" need
+    // chronological order. Reverse, then stable-sort by date so same-day
+    // games keep their oldest-to-newest order.
+    rating_history.reverse();
+    rating_history.sort_by(|a, b| a.date.cmp(&b.date));
+
     let peak_rating = rating_history.iter().map(|p| p.elo).max().unwrap_or(0);
     let lowest_rating = rating_history.iter().map(|p| p.elo).min().unwrap_or(0);
     let current_rating = rating_history.last().map(|p| p.elo).unwrap_or(0);

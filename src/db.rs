@@ -164,7 +164,12 @@ impl Database {
             SELECT id, pgn, white, black, white_elo, black_elo, result, date, time_control, eco, opening,
                    accuracy_white, accuracy_black, analysis_json
             FROM games
-            ORDER BY id DESC
+            -- Newest games first. Dates are PGN-style YYYY.MM.DD so they sort
+            -- lexically; unknown dates ("????.??.??") go last. Ties fall back to
+            -- insertion order, newest insert first.
+            ORDER BY (date GLOB '[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]') DESC,
+                     date DESC,
+                     id DESC
             "#,
         )?;
 
