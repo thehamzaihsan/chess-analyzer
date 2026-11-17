@@ -801,27 +801,123 @@ impl App {
         let Some(first_game) = game else {
             return Task::none();
         };
+        let engine_pool = self.engine_pool.clone();
+        let db = Arc::clone(&self.db);
 
         Task::perform(
             async move {
-                let engine_path = discover_engine_path("stockfish")
-                    .ok_or_else(|| "Stockfish engine not found".to_string())?;
-                let mut engine = UciEngine::spawn(&engine_path, &[])
-                    .await
-                    .map_err(|e| e.to_string())?;
+                use crate::db::CachedEval;
+                use crate::engine::{AnalysisJob, PoolProgress};
 
                 let parsed = parse_pgn_games(&first_game.pgn);
                 let moves = parsed.first().map(|g| g.moves.clone()).unwrap_or_default();
 
-                let mut evals: Vec<Option<UciEval>> = Vec::new();
-                for ply in &moves {
-                    match engine.evaluate_fen(&ply.fen_after, 12, Some(500)).await {
-                        Ok(eval) => evals.push(Some(eval)),
-                        Err(_) => evals.push(None),
-                    }
+                if moves.is_empty() {
+                    return Ok(analyze_game(&moves, &[]));
                 }
 
-                let _ = engine.quit().await;
+                // `analyze_game` expects n + 1 evals:
+                // evals[0] = position before moves[0], evals[i + 1] = position after moves[i].
+                let mut fens = Vec::with_capacity(moves.len() + 1);
+                fens.push(moves[0].fen_before.clone());
+                for ply in &moves {
+                    fens.push(ply.fen_after.clone());
+                }
+
+                let evals: Vec<Option<UciEval>> = if let Some(pool) = engine_pool {
+                    let jobs: Vec<AnalysisJob> = fens
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, fen)| AnalysisJob {
+                            game_id,
+                            move_idx: idx,
+                            fen,
+                            depth: 12,
+                            movetime_ms: None,
+                        })
+                        .collect();
+
+                    let total = jobs.len();
+                    let mut evals = vec![None; total];
+                    let mut rx = pool.analyze_batch(jobs);
+                    let mut last_error: Option<String> = None;
+                    let mut received_any = false;
+
+                    while let Some(msg) = rx.recv().await {
+                        match msg {
+                            PoolProgress::Progress { result, .. } => {
+                                if result.move_idx < evals.len() {
+                                    evals[result.move_idx] = Some(result.eval);
+                                    received_any = true;
+                                }
+                            }
+                            PoolProgress::Error(e) => {
+                                last_error = Some(e);
+                            }
+                            PoolProgress::Finished { .. } => break,
+                            PoolProgress::Started { .. } => {}
+                        }
+                    }
+
+                    if !received_any {
+                        if let Some(err) = last_error {
+                            return Err(err);
+                        }
+                    }
+
+                    evals
+                } else {
+                    let engine_path = discover_engine_path("stockfish")
+                        .ok_or_else(|| "Stockfish engine not found".to_string())?;
+                    let mut engine: Option<UciEngine> = None;
+                    let mut evals: Vec<Option<UciEval>> = Vec::with_capacity(fens.len());
+
+                    for fen in &fens {
+                        if let Ok(Some(cached)) = db.get_cached_eval(fen) {
+                            evals.push(Some(UciEval {
+                                depth: cached.depth,
+                                score_cp: cached.score_cp,
+                                mate_in: cached.mate_in,
+                                best_move: cached.best_move,
+                                pv: cached.pv,
+                            }));
+                            continue;
+                        }
+
+                        if engine.is_none() {
+                            engine = Some(
+                                UciEngine::spawn(&engine_path, &[])
+                                    .await
+                                    .map_err(|e| e.to_string())?,
+                            );
+                        }
+
+                        if let Some(eng) = engine.as_mut() {
+                            match eng.evaluate_fen(fen, 12, None).await {
+                                Ok(eval) => {
+                                    let _ = db.set_cached_eval(&CachedEval {
+                                        fen: fen.clone(),
+                                        depth: eval.depth,
+                                        score_cp: eval.score_cp,
+                                        mate_in: eval.mate_in,
+                                        best_move: eval.best_move.clone(),
+                                        pv: eval.pv.clone(),
+                                    });
+                                    evals.push(Some(eval));
+                                }
+                                Err(_) => evals.push(None),
+                            }
+                        } else {
+                            evals.push(None);
+                        }
+                    }
+
+                    if let Some(mut eng) = engine {
+                        let _ = eng.quit().await;
+                    }
+                    evals
+                };
+
                 let analysis = analyze_game(&moves, &evals);
                 Ok(analysis)
             },

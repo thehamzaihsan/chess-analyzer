@@ -54,6 +54,18 @@ impl EnginePool {
         })
     }
 
+    pub fn with_engine_path(
+        db: Database,
+        engine_path: std::path::PathBuf,
+        num_workers: usize,
+    ) -> Self {
+        Self {
+            engine_path,
+            num_workers: num_workers.max(1),
+            db,
+        }
+    }
+
     /// Spawns background worker tasks to process the batch of analysis jobs.
     /// Emits progress messages via the returned Receiver channel.
     pub fn analyze_batch(
@@ -63,105 +75,165 @@ impl EnginePool {
         let (tx, rx) = mpsc::channel(100);
         let total = jobs.len();
         let engine_path = self.engine_path.clone();
-        let num_workers = self.num_workers.min(total).max(1);
+        let max_workers = self.num_workers;
         let db = self.db.clone();
 
         tokio::spawn(async move {
             let _ = tx.send(PoolProgress::Started { total }).await;
 
-            let jobs_queue = Arc::new(Mutex::new(jobs));
+            if total == 0 {
+                let _ = tx.send(PoolProgress::Finished { total }).await;
+                return;
+            }
+
             let completed_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut uncached_jobs = Vec::new();
 
-            let mut worker_handles = Vec::new();
-
-            for _ in 0..num_workers {
-                let queue = jobs_queue.clone();
-                let counter = completed_counter.clone();
-                let tx_worker = tx.clone();
-                let path = engine_path.clone();
-                let db_clone = db.clone();
-
-                let handle = tokio::spawn(async move {
-                    // Spawn single-threaded engine worker
-                    let options = [("Threads", "1"), ("Hash", "32")];
-                    let mut engine = match UciEngine::spawn(&path, &options).await {
-                        Ok(e) => e,
-                        Err(e) => {
-                            let _ = tx_worker.send(PoolProgress::Error(format!("Failed to start worker: {}", e))).await;
-                            return;
-                        }
+            for job in jobs {
+                if let Some(c) = db.get_cached_eval(&job.fen).unwrap_or(None) {
+                    let completed =
+                        completed_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    let res = AnalysisResult {
+                        game_id: job.game_id,
+                        move_idx: job.move_idx,
+                        fen: job.fen,
+                        eval: UciEval {
+                            depth: c.depth,
+                            score_cp: c.score_cp,
+                            mate_in: c.mate_in,
+                            best_move: c.best_move,
+                            pv: c.pv,
+                        },
+                        was_cached: true,
                     };
-
-                    loop {
-                        let job = {
-                            let mut q = queue.lock().await;
-                            q.pop()
-                        };
-
-                        let job = match job {
-                            Some(j) => j,
-                            None => break, // Queue empty
-                        };
-
-                        // Check cache first!
-                        let cached = db_clone.get_cached_eval(&job.fen).unwrap_or(None);
-                        let (eval, was_cached) = if let Some(c) = cached {
-                            (
-                                UciEval {
-                                    depth: c.depth,
-                                    score_cp: c.score_cp,
-                                    mate_in: c.mate_in,
-                                    best_move: c.best_move,
-                                    pv: c.pv,
-                                },
-                                true,
-                            )
-                        } else {
-                            match engine.evaluate_fen(&job.fen, job.depth, job.movetime_ms).await {
-                                Ok(ev) => {
-                                    // Save to database cache
-                                    let _ = db_clone.set_cached_eval(&CachedEval {
-                                        fen: job.fen.clone(),
-                                        depth: ev.depth,
-                                        score_cp: ev.score_cp,
-                                        mate_in: ev.mate_in,
-                                        best_move: ev.best_move.clone(),
-                                        pv: ev.pv.clone(),
-                                    });
-                                    (ev, false)
-                                }
-                                Err(e) => {
-                                    let _ = tx_worker.send(PoolProgress::Error(format!("Eval failed: {}", e))).await;
-                                    continue;
-                                }
-                            }
-                        };
-
-                        let completed = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                        let res = AnalysisResult {
-                            game_id: job.game_id,
-                            move_idx: job.move_idx,
-                            fen: job.fen,
-                            eval,
-                            was_cached,
-                        };
-
-                        let _ = tx_worker.send(PoolProgress::Progress {
+                    let _ = tx
+                        .send(PoolProgress::Progress {
                             completed,
                             total,
                             result: res,
-                        }).await;
-                    }
-
-                    let _ = engine.quit().await;
-                });
-
-                worker_handles.push(handle);
+                        })
+                        .await;
+                } else {
+                    uncached_jobs.push(job);
+                }
             }
 
-            // Await all workers
-            for h in worker_handles {
-                let _ = h.await;
+            if !uncached_jobs.is_empty() {
+                let num_workers = max_workers.min(uncached_jobs.len()).max(1);
+                uncached_jobs.reverse();
+                let jobs_queue = Arc::new(Mutex::new(uncached_jobs));
+                let mut worker_handles = Vec::new();
+
+                for _ in 0..num_workers {
+                    let queue = jobs_queue.clone();
+                    let counter = completed_counter.clone();
+                    let tx_worker = tx.clone();
+                    let path = engine_path.clone();
+                    let db_clone = db.clone();
+
+                    let handle = tokio::spawn(async move {
+                        let options = [("Threads", "1"), ("Hash", "32")];
+                        let mut engine: Option<UciEngine> = None;
+
+                        loop {
+                            let job = {
+                                let mut q = queue.lock().await;
+                                q.pop()
+                            };
+
+                            let job = match job {
+                                Some(j) => j,
+                                None => break,
+                            };
+
+                            // Re-check cache in case a sibling worker evaluated the same FEN.
+                            let cached = db_clone.get_cached_eval(&job.fen).unwrap_or(None);
+                            let (eval, was_cached) = if let Some(c) = cached {
+                                (
+                                    UciEval {
+                                        depth: c.depth,
+                                        score_cp: c.score_cp,
+                                        mate_in: c.mate_in,
+                                        best_move: c.best_move,
+                                        pv: c.pv,
+                                    },
+                                    true,
+                                )
+                            } else {
+                                if engine.is_none() {
+                                    match UciEngine::spawn(&path, &options).await {
+                                        Ok(e) => engine = Some(e),
+                                        Err(e) => {
+                                            let _ = tx_worker
+                                                .send(PoolProgress::Error(format!(
+                                                    "Failed to start worker: {}",
+                                                    e
+                                                )))
+                                                .await;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                match engine
+                                    .as_mut()
+                                    .expect("engine initialized")
+                                    .evaluate_fen(&job.fen, job.depth, job.movetime_ms)
+                                    .await
+                                {
+                                    Ok(ev) => {
+                                        let _ = db_clone.set_cached_eval(&CachedEval {
+                                            fen: job.fen.clone(),
+                                            depth: ev.depth,
+                                            score_cp: ev.score_cp,
+                                            mate_in: ev.mate_in,
+                                            best_move: ev.best_move.clone(),
+                                            pv: ev.pv.clone(),
+                                        });
+                                        (ev, false)
+                                    }
+                                    Err(e) => {
+                                        let _ = tx_worker
+                                            .send(PoolProgress::Error(format!(
+                                                "Eval failed: {}",
+                                                e
+                                            )))
+                                            .await;
+                                        continue;
+                                    }
+                                }
+                            };
+
+                            let completed =
+                                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            let res = AnalysisResult {
+                                game_id: job.game_id,
+                                move_idx: job.move_idx,
+                                fen: job.fen,
+                                eval,
+                                was_cached,
+                            };
+
+                            let _ = tx_worker
+                                .send(PoolProgress::Progress {
+                                    completed,
+                                    total,
+                                    result: res,
+                                })
+                                .await;
+                        }
+
+                        if let Some(mut eng) = engine {
+                            let _ = eng.quit().await;
+                        }
+                    });
+
+                    worker_handles.push(handle);
+                }
+
+                for h in worker_handles {
+                    let _ = h.await;
+                }
             }
 
             let _ = tx.send(PoolProgress::Finished { total }).await;

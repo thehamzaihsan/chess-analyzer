@@ -96,7 +96,11 @@ impl UciEngine {
         max_depth: u32,
         movetime_ms: Option<u64>,
     ) -> Result<UciEval> {
-        let is_white_turn = !fen.contains(" b ");
+        let is_white_turn = fen
+            .split_whitespace()
+            .nth(1)
+            .map(|c| c != "b")
+            .unwrap_or(true);
 
         self.send_line(&format!("position fen {}", fen)).await?;
 
@@ -128,10 +132,7 @@ impl UciEngine {
             if trimmed.starts_with("info ") {
                 Self::parse_info_line(trimmed, is_white_turn, &mut latest_eval);
             } else if trimmed.starts_with("bestmove ") {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    latest_eval.best_move = Some(parts[1].to_string());
-                }
+                latest_eval.best_move = Self::parse_bestmove_line(trimmed);
                 break;
             }
         }
@@ -157,8 +158,21 @@ impl UciEngine {
         eval.best_move.ok_or_else(|| anyhow::anyhow!("No move returned by engine"))
     }
 
+    /// Parses a UCI `bestmove <move>` line, returning `None` for `(none)` or `0000`.
+    pub fn parse_bestmove_line(line: &str) -> Option<String> {
+        let mut parts = line.split_whitespace();
+        if parts.next()? != "bestmove" {
+            return None;
+        }
+        let mv = parts.next()?;
+        if mv == "(none)" || mv == "0000" {
+            None
+        } else {
+            Some(mv.to_string())
+        }
+    }
 
-    fn parse_info_line(line: &str, is_white_turn: bool, eval: &mut UciEval) {
+    pub fn parse_info_line(line: &str, is_white_turn: bool, eval: &mut UciEval) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         let mut idx = 0;
 
@@ -182,7 +196,17 @@ impl UciEngine {
                         }
                         "mate" => {
                             if let Ok(m) = parts[idx + 2].parse::<i32>() {
-                                eval.mate_in = Some(if is_white_turn { m } else { -m });
+                                // UCI `score mate 0` means the side to move is already checkmated,
+                                // so the opponent (who just moved) delivered mate.
+                                // Encode with White-perspective sign (+ = White wins, - = Black wins).
+                                let white_mate = if m == 0 {
+                                    if is_white_turn { -1 } else { 1 }
+                                } else if is_white_turn {
+                                    m
+                                } else {
+                                    -m
+                                };
+                                eval.mate_in = Some(white_mate);
                                 eval.score_cp = None;
                             }
                         }
