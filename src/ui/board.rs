@@ -1,6 +1,8 @@
+use crate::ui::theme::{board as board_theme, fonts, palette};
+use iced::alignment::{Horizontal, Vertical};
 use iced::event::Status;
 use iced::mouse::{self, Cursor};
-use iced::widget::canvas::{self, stroke::{LineCap, LineJoin}, Event, Frame, Geometry, Path, Program, Stroke, Text};
+use iced::widget::canvas::{self, Event, Frame, Geometry, Path, Program, Stroke, Text};
 use iced::widget::svg::Handle;
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 use shakmaty::{Chess, Color as PieceColor, File, Position, Rank, Role, Square};
@@ -74,6 +76,32 @@ pub struct BoardWidget {
     pub custom_arrows: Vec<BoardArrow>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BoardCanvasState {
+    dragging: Option<DragState>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DragState {
+    from: Square,
+    press_pos: Point,
+    cursor_pos: Point,
+    is_dragging: bool,
+}
+
+fn board_metrics(bounds: Rectangle) -> (f32, Point) {
+    let board_size = bounds.width.min(bounds.height).max(0.0);
+    let origin = Point::new(
+        ((bounds.width - board_size) / 2.0).max(0.0),
+        ((bounds.height - board_size) / 2.0).max(0.0),
+    );
+    (board_size, origin)
+}
+
+fn square_is_light(file_idx: u8, rank_idx: u8) -> bool {
+    (file_idx + rank_idx) % 2 != 0
+}
+
 impl BoardWidget {
     pub fn position_fen(&self) -> String {
         shakmaty::fen::Fen::from_position(&self.position, shakmaty::EnPassantMode::Legal).to_string()
@@ -97,15 +125,27 @@ impl BoardWidget {
             .into()
     }
 
-    /// Converts canvas (x, y) relative to board into chess Square
-    fn point_to_square(&self, point: Point, board_size: f32) -> Option<Square> {
-        if point.x < 0.0 || point.x >= board_size || point.y < 0.0 || point.y >= board_size {
+    pub fn view_responsive<'a>(&'a self) -> Element<'a, BoardMessage> {
+        canvas::Canvas::new(self)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// Converts canvas (x, y) relative to bounds into chess Square
+    fn point_to_square_in_board(&self, point: Point, board_size: f32, origin: Point) -> Option<Square> {
+        if board_size <= 0.0 {
+            return None;
+        }
+        let local_x = point.x - origin.x;
+        let local_y = point.y - origin.y;
+        if local_x < 0.0 || local_x >= board_size || local_y < 0.0 || local_y >= board_size {
             return None;
         }
 
         let sq_size = board_size / 8.0;
-        let col = (point.x / sq_size).floor() as u8;
-        let row = (point.y / sq_size).floor() as u8;
+        let col = (local_x / sq_size).floor() as u8;
+        let row = (local_y / sq_size).floor() as u8;
 
         if col >= 8 || row >= 8 {
             return None;
@@ -120,7 +160,7 @@ impl BoardWidget {
     }
 
     /// Converts chess Square into rectangle on canvas
-    fn square_to_rect(&self, square: Square, sq_size: f32) -> Rectangle {
+    fn square_to_rect_in_board(&self, square: Square, sq_size: f32, origin: Point) -> Rectangle {
         let file = square.file() as u8;
         let rank = square.rank() as u8;
 
@@ -128,8 +168,8 @@ impl BoardWidget {
         let row = if self.flipped { rank } else { 7 - rank };
 
         Rectangle {
-            x: col as f32 * sq_size,
-            y: row as f32 * sq_size,
+            x: origin.x + col as f32 * sq_size,
+            y: origin.y + row as f32 * sq_size,
             width: sq_size,
             height: sq_size,
         }
@@ -137,128 +177,275 @@ impl BoardWidget {
 }
 
 impl Program<BoardMessage> for BoardWidget {
-    type State = ();
+    type State = BoardCanvasState;
 
     fn update(
         &self,
-        _state: &mut Self::State,
+        state: &mut Self::State,
         event: Event,
         bounds: Rectangle,
         cursor: Cursor,
     ) -> (Status, Option<BoardMessage>) {
-        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
-            if let Some(cursor_pos) = cursor.position_in(bounds) {
-                let board_size = bounds.width.min(bounds.height);
-                if let Some(sq) = self.point_to_square(cursor_pos, board_size) {
-                    return (Status::Captured, Some(BoardMessage::SquareClicked(sq)));
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if let Some(cursor_pos) = cursor.position_in(bounds) {
+                    let (board_size, origin) = board_metrics(bounds);
+                    if let Some(sq) = self.point_to_square_in_board(cursor_pos, board_size, origin) {
+                        if self.position.board().color_at(sq) == Some(self.position.turn()) {
+                            state.dragging = Some(DragState {
+                                from: sq,
+                                press_pos: cursor_pos,
+                                cursor_pos,
+                                is_dragging: false,
+                            });
+                        } else {
+                            state.dragging = None;
+                        }
+                        return (Status::Captured, Some(BoardMessage::SquareClicked(sq)));
+                    }
                 }
             }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some(ref mut drag) = state.dragging {
+                    if let Some(abs_pos) = cursor.position() {
+                        let rel = Point::new(abs_pos.x - bounds.x, abs_pos.y - bounds.y);
+                        drag.cursor_pos = rel;
+                        let dx = rel.x - drag.press_pos.x;
+                        let dy = rel.y - drag.press_pos.y;
+                        if !drag.is_dragging && (dx * dx + dy * dy) > 9.0 {
+                            drag.is_dragging = true;
+                        }
+                        return (Status::Captured, None);
+                    }
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Some(drag) = state.dragging.take() {
+                    if drag.is_dragging {
+                        if let Some(cursor_pos) = cursor.position_in(bounds) {
+                            let (board_size, origin) = board_metrics(bounds);
+                            if let Some(to_sq) = self.point_to_square_in_board(cursor_pos, board_size, origin) {
+                                if to_sq != drag.from {
+                                    return (Status::Captured, Some(BoardMessage::SquareClicked(to_sq)));
+                                }
+                            }
+                        }
+                    }
+                    return (Status::Captured, None);
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if state.dragging.take().is_some() {
+                    return (Status::Captured, None);
+                }
+            }
+            _ => {}
         }
         (Status::Ignored, None)
     }
 
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: Cursor,
+    ) -> mouse::Interaction {
+        if state.dragging.as_ref().is_some_and(|d| d.is_dragging) {
+            return mouse::Interaction::Grabbing;
+        }
+
+        if let Some(cursor_pos) = cursor.position_in(bounds) {
+            let (board_size, origin) = board_metrics(bounds);
+            if let Some(sq) = self.point_to_square_in_board(cursor_pos, board_size, origin) {
+                let legal_moves = self.position.legal_moves();
+                let is_movable_piece = self.position.board().color_at(sq) == Some(self.position.turn())
+                    && legal_moves.iter().any(|m| m.from() == Some(sq));
+                if is_movable_piece {
+                    return mouse::Interaction::Grab;
+                }
+                if self
+                    .selected_square
+                    .is_some_and(|sel| legal_moves.iter().any(|m| m.from() == Some(sel) && m.to() == sq))
+                {
+                    return mouse::Interaction::Pointer;
+                }
+            }
+        }
+
+        mouse::Interaction::default()
+    }
+
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let board_size = bounds.width.min(bounds.height);
+        let mut frame = Frame::new(renderer, bounds.size());
+        let (board_size, origin) = board_metrics(bounds);
+        if board_size < 16.0 {
+            return vec![frame.into_geometry()];
+        }
         let sq_size = board_size / 8.0;
-
-        let mut frame = Frame::new(renderer, Size::new(board_size, board_size));
-
-        // Colors
-        let light_color = Color::from_rgb8(235, 236, 208);
-        let dark_color = Color::from_rgb8(119, 149, 86);
-        let selected_color = Color::from_rgba8(186, 202, 68, 0.7);
-        let last_move_color = Color::from_rgba8(245, 246, 130, 0.5);
-        let check_color = Color::from_rgba8(224, 86, 91, 0.7);
-        let dot_color = Color::from_rgba8(20, 20, 20, 0.25);
-        let coord_light = Color::from_rgb8(119, 149, 86);
-        let coord_dark = Color::from_rgb8(235, 236, 208);
 
         let pieces = get_piece_handles();
         let legal_moves = self.position.legal_moves();
 
-        // 1. Draw Squares & Highlights
+        let active_drag = state.dragging.filter(|d| d.is_dragging);
+        let drag_from = active_drag.map(|d| d.from);
+        let drag_hover_sq = active_drag.and_then(|d| {
+            cursor
+                .position_in(bounds)
+                .and_then(|pos| self.point_to_square_in_board(pos, board_size, origin))
+                .filter(|sq| *sq != d.from)
+        });
+
+        let in_check = self.position.is_check();
+        let turn = self.position.turn();
+
+        // 1. Draw Squares & Layered Highlights
+        // Layer order: Base square -> Last move -> Check -> Selected (over last-move) -> Drag hover border
         for rank_idx in 0..8u8 {
             for file_idx in 0..8u8 {
                 let file = File::new(file_idx as u32);
                 let rank = Rank::new(rank_idx as u32);
                 let square = Square::from_coords(file, rank);
-                let rect = self.square_to_rect(square, sq_size);
+                let rect = self.square_to_rect_in_board(square, sq_size, origin);
 
-                let is_light = (file_idx + rank_idx) % 2 != 0;
-                let bg_color = if is_light { light_color } else { dark_color };
+                let bg_color = if square_is_light(file_idx, rank_idx) {
+                    board_theme::LIGHT_SQUARE
+                } else {
+                    board_theme::DARK_SQUARE
+                };
                 frame.fill_rectangle(rect.position(), rect.size(), bg_color);
 
-                // Highlight last move
+                // Last-move highlight
                 if let Some((from, to)) = self.last_move {
                     if square == from || square == to {
-                        frame.fill_rectangle(rect.position(), rect.size(), last_move_color);
+                        frame.fill_rectangle(rect.position(), rect.size(), board_theme::LAST_MOVE);
                     }
                 }
 
-                // Highlight selected square
+                // Check highlight on the checked King's square
+                let is_checked_king = in_check
+                    && self
+                        .position
+                        .board()
+                        .piece_at(square)
+                        .is_some_and(|p| p.role == Role::King && p.color == turn);
+                if is_checked_king {
+                    frame.fill_rectangle(rect.position(), rect.size(), board_theme::CHECK);
+                }
+
+                // Selected-square highlight (layered over last-move; preserves check glow if King is in check)
                 if self.selected_square == Some(square) {
-                    frame.fill_rectangle(rect.position(), rect.size(), selected_color);
+                    if !is_checked_king {
+                        frame.fill_rectangle(rect.position(), rect.size(), board_theme::SELECTED);
+                    }
+                    let inset = (sq_size * 0.04).max(1.5);
+                    let border_path = Path::rectangle(
+                        Point::new(rect.x + inset / 2.0, rect.y + inset / 2.0),
+                        Size::new(rect.width - inset, rect.height - inset),
+                    );
+                    let border_color = if is_checked_king {
+                        board_theme::SELECTED
+                    } else {
+                        board_theme::SELECTED_BORDER
+                    };
+                    frame.stroke(
+                        &border_path,
+                        Stroke::default().with_color(border_color).with_width(inset),
+                    );
                 }
 
-                // Check highlight
-                if self.position.is_check() {
-                    if let Some(piece) = self.position.board().piece_at(square) {
-                        if piece.role == Role::King && piece.color == self.position.turn() {
-                            frame.fill_rectangle(rect.position(), rect.size(), check_color);
-                        }
-                    }
+                // Drag hover target highlight
+                if drag_hover_sq == Some(square) {
+                    let bw = (sq_size * 0.05).max(2.0);
+                    let hover_path = Path::rectangle(
+                        Point::new(rect.x + bw / 2.0, rect.y + bw / 2.0),
+                        Size::new(rect.width - bw, rect.height - bw),
+                    );
+                    frame.stroke(
+                        &hover_path,
+                        Stroke::default()
+                            .with_color(board_theme::DRAG_TARGET_BORDER)
+                            .with_width(bw),
+                    );
                 }
             }
         }
 
-        // 2. Draw Coordinates
-        for i in 0..8u8 {
-            let file_char = if self.flipped {
-                (b'h' - i) as char
-            } else {
-                (b'a' + i) as char
-            };
-            let rank_char = if self.flipped {
-                (b'1' + i) as char
-            } else {
-                (b'8' - i) as char
-            };
+        // Subtle outer border hugging the square board
+        let board_border = Path::rectangle(origin, Size::new(board_size, board_size));
+        frame.stroke(
+            &board_border,
+            Stroke::default().with_color(palette::BORDER).with_width(2.0),
+        );
 
-            // Files on bottom row
-            let file_is_light = (i + 0) % 2 != 0;
+        // 2. Draw Coordinates (scaled with square size, opposite square color, flipped-safe)
+        let coord_size = (sq_size * 0.19).clamp(9.0, 18.0);
+        let coord_margin = (sq_size * 0.06).max(2.0);
+
+        for i in 0..8u8 {
+            // File labels on bottom row (row = 7, col = i)
+            let file_idx = if self.flipped { 7 - i } else { i };
+            let bottom_rank_idx = if self.flipped { 7 } else { 0 };
+            let file_is_light = square_is_light(file_idx, bottom_rank_idx);
+            let file_char = (b'a' + file_idx) as char;
+
             frame.fill_text(Text {
                 content: file_char.to_string(),
-                position: Point::new(i as f32 * sq_size + sq_size - 12.0, board_size - 14.0),
-                color: if file_is_light { coord_light } else { coord_dark },
-                size: 11.0.into(),
-                font: crate::ui::theme::fonts::MONO_BOLD,
+                position: Point::new(
+                    origin.x + (i as f32 + 1.0) * sq_size - coord_margin,
+                    origin.y + board_size - coord_margin,
+                ),
+                color: if file_is_light {
+                    board_theme::DARK_SQUARE
+                } else {
+                    board_theme::LIGHT_SQUARE
+                },
+                size: coord_size.into(),
+                font: fonts::MONO_BOLD,
+                horizontal_alignment: Horizontal::Right,
+                vertical_alignment: Vertical::Bottom,
                 ..Default::default()
             });
 
-            // Ranks on left column
-            let rank_is_light = (0 + i) % 2 != 0;
+            // Rank labels on left column (col = 0, row = i)
+            let left_file_idx = if self.flipped { 7 } else { 0 };
+            let rank_idx = if self.flipped { i } else { 7 - i };
+            let rank_is_light = square_is_light(left_file_idx, rank_idx);
+            let rank_char = (b'1' + rank_idx) as char;
+
             frame.fill_text(Text {
                 content: rank_char.to_string(),
-                position: Point::new(3.0, i as f32 * sq_size + 2.0),
-                color: if rank_is_light { coord_light } else { coord_dark },
-                size: 11.0.into(),
-                font: crate::ui::theme::fonts::MONO_BOLD,
+                position: Point::new(
+                    origin.x + coord_margin,
+                    origin.y + i as f32 * sq_size + coord_margin,
+                ),
+                color: if rank_is_light {
+                    board_theme::DARK_SQUARE
+                } else {
+                    board_theme::LIGHT_SQUARE
+                },
+                size: coord_size.into(),
+                font: fonts::MONO_BOLD,
+                horizontal_alignment: Horizontal::Left,
+                vertical_alignment: Vertical::Top,
                 ..Default::default()
             });
         }
 
-        // 3. Draw Pieces
+        // 3. Draw Stationary Pieces (hide origin piece while actively dragging)
         for square in shakmaty::Square::ALL {
+            if drag_from == Some(square) {
+                continue;
+            }
             if let Some(piece) = self.position.board().piece_at(square) {
                 if let Some(handle) = pieces.get(&(piece.color, piece.role)) {
-                    let rect = self.square_to_rect(square, sq_size);
+                    let rect = self.square_to_rect_in_board(square, sq_size, origin);
                     let pad = sq_size * 0.04;
                     let piece_rect = Rectangle {
                         x: rect.x + pad,
@@ -271,22 +458,33 @@ impl Program<BoardMessage> for BoardWidget {
             }
         }
 
-        // 4. Draw Legal Move Hints (Dots / Rings)
+        // 4. Draw Legal Move Hints (deduplicated for promotions)
         if let Some(selected) = self.selected_square {
+            let mut seen_dests = [false; 64];
             for m in &legal_moves {
                 if m.from() == Some(selected) {
                     let dest = m.to();
-                    let dest_rect = self.square_to_rect(dest, sq_size);
-                    let center = Point::new(dest_rect.x + sq_size / 2.0, dest_rect.y + sq_size / 2.0);
+                    let dest_idx = dest as usize;
+                    if seen_dests[dest_idx] {
+                        continue;
+                    }
+                    seen_dests[dest_idx] = true;
 
+                    let dest_rect = self.square_to_rect_in_board(dest, sq_size, origin);
+                    let center = Point::new(dest_rect.x + sq_size / 2.0, dest_rect.y + sq_size / 2.0);
                     let is_capture = self.position.board().piece_at(dest).is_some() || m.is_en_passant();
 
                     if is_capture {
                         let path = Path::circle(center, sq_size * 0.42);
-                        frame.stroke(&path, Stroke::default().with_color(dot_color).with_width(sq_size * 0.08));
+                        frame.stroke(
+                            &path,
+                            Stroke::default()
+                                .with_color(board_theme::LEGAL_DOT)
+                                .with_width((sq_size * 0.085).max(2.0)),
+                        );
                     } else {
                         let path = Path::circle(center, sq_size * 0.16);
-                        frame.fill(&path, dot_color);
+                        frame.fill(&path, board_theme::LEGAL_DOT);
                     }
                 }
             }
@@ -294,10 +492,26 @@ impl Program<BoardMessage> for BoardWidget {
 
         // 5. Draw Engine & Custom Arrows
         if let Some((from, to)) = self.best_move_arrow {
-            draw_chess_arrow(&mut frame, from, to, ArrowColor::Green, self.flipped, sq_size);
+            draw_chess_arrow(&mut frame, from, to, ArrowColor::Green, self.flipped, sq_size, origin);
         }
         for arrow in &self.custom_arrows {
-            draw_chess_arrow(&mut frame, arrow.from, arrow.to, arrow.color, self.flipped, sq_size);
+            draw_chess_arrow(&mut frame, arrow.from, arrow.to, arrow.color, self.flipped, sq_size, origin);
+        }
+
+        // 6. Draw Dragged Piece Under Cursor (on top of everything)
+        if let Some(drag) = active_drag {
+            if let Some(piece) = self.position.board().piece_at(drag.from) {
+                if let Some(handle) = pieces.get(&(piece.color, piece.role)) {
+                    let drag_size = sq_size * 1.04;
+                    let piece_rect = Rectangle {
+                        x: drag.cursor_pos.x - drag_size / 2.0,
+                        y: drag.cursor_pos.y - drag_size / 2.0,
+                        width: drag_size,
+                        height: drag_size,
+                    };
+                    frame.draw_svg(piece_rect, handle);
+                }
+            }
         }
 
         vec![frame.into_geometry()]
@@ -311,6 +525,7 @@ fn draw_chess_arrow(
     color_type: ArrowColor,
     flipped: bool,
     sq_size: f32,
+    origin: Point,
 ) {
     let file1 = from.file() as u8;
     let rank1 = from.rank() as u8;
@@ -322,26 +537,20 @@ fn draw_chess_arrow(
     let col2 = if flipped { 7 - file2 } else { file2 };
     let row2 = if flipped { rank2 } else { 7 - rank2 };
 
-    let p1 = Point::new(col1 as f32 * sq_size + sq_size / 2.0, row1 as f32 * sq_size + sq_size / 2.0);
-    let p2 = Point::new(col2 as f32 * sq_size + sq_size / 2.0, row2 as f32 * sq_size + sq_size / 2.0);
+    let p1 = Point::new(
+        origin.x + col1 as f32 * sq_size + sq_size / 2.0,
+        origin.y + row1 as f32 * sq_size + sq_size / 2.0,
+    );
+    let p2 = Point::new(
+        origin.x + col2 as f32 * sq_size + sq_size / 2.0,
+        origin.y + row2 as f32 * sq_size + sq_size / 2.0,
+    );
 
-    let (arrow_fill, arrow_shadow) = match color_type {
-        ArrowColor::Green => (
-            Color::from_rgba8(38, 182, 86, 0.88),
-            Color::from_rgba8(10, 40, 20, 0.40),
-        ),
-        ArrowColor::Red => (
-            Color::from_rgba8(235, 75, 65, 0.88),
-            Color::from_rgba8(45, 15, 15, 0.40),
-        ),
-        ArrowColor::Blue => (
-            Color::from_rgba8(59, 130, 246, 0.88),
-            Color::from_rgba8(15, 25, 50, 0.40),
-        ),
-        ArrowColor::Orange => (
-            Color::from_rgba8(230, 140, 30, 0.88),
-            Color::from_rgba8(45, 25, 10, 0.40),
-        ),
+    let arrow_fill = match color_type {
+        ArrowColor::Green => board_theme::ARROW_GREEN,
+        ArrowColor::Red => board_theme::ARROW_RED,
+        ArrowColor::Blue => board_theme::ARROW_BLUE,
+        ArrowColor::Orange => board_theme::ARROW_ORANGE,
     };
 
     let dx = p2.x - p1.x;
@@ -356,98 +565,92 @@ fn draw_chess_arrow(
     let is_knight = (df == 1 && dr == 2) || (df == 2 && dr == 1);
 
     let head_len = sq_size * 0.34;
-    let head_width = sq_size * 0.42;
-    let shaft_width = sq_size * 0.16;
+    let head_width = sq_size * 0.44;
+    let shaft_width = sq_size * 0.17;
+    let hw = shaft_width / 2.0;
+    let start_offset = sq_size * 0.25;
+    let tip_inset = sq_size * 0.08;
 
     if is_knight {
+        // L-shaped knight arrow: 2 squares along the long axis first, then 1 square perpendicular
         let corner = if dr == 2 {
             Point::new(p1.x, p2.y)
         } else {
             Point::new(p2.x, p1.y)
         };
 
-        let shadow_stroke = Stroke::default()
-            .with_color(arrow_shadow)
-            .with_width(shaft_width + 3.0)
-            .with_line_cap(LineCap::Round)
-            .with_line_join(LineJoin::Round);
+        let d1x = corner.x - p1.x;
+        let d1y = corner.y - p1.y;
+        let dist1 = (d1x * d1x + d1y * d1y).sqrt();
+        let d2x = p2.x - corner.x;
+        let d2y = p2.y - corner.y;
+        let dist2 = (d2x * d2x + d2y * d2y).sqrt();
+        if dist1 < 1.0 || dist2 < 1.0 {
+            return;
+        }
 
-        let main_stroke = Stroke::default()
-            .with_color(arrow_fill)
-            .with_width(shaft_width)
-            .with_line_cap(LineCap::Round)
-            .with_line_join(LineJoin::Round);
-
-        let dir2_x = p2.x - corner.x;
-        let dir2_y = p2.y - corner.y;
-        let dist2 = (dir2_x * dir2_x + dir2_y * dir2_y).sqrt();
-        let u2 = (dir2_x / dist2, dir2_y / dist2);
+        let u1 = (d1x / dist1, d1y / dist1);
+        let perp1 = (-u1.1, u1.0);
+        let u2 = (d2x / dist2, d2y / dist2);
         let perp2 = (-u2.1, u2.0);
 
-        let shaft_end = Point::new(p2.x - u2.0 * (head_len * 0.85), p2.y - u2.1 * (head_len * 0.85));
-
-        let l_path = Path::new(|builder| {
-            builder.move_to(p1);
-            builder.line_to(corner);
-            builder.line_to(shaft_end);
-        });
-
-        frame.stroke(&l_path, shadow_stroke);
-        frame.stroke(&l_path, main_stroke);
-
-        let tip = Point::new(p2.x - u2.0 * (sq_size * 0.08), p2.y - u2.1 * (sq_size * 0.08));
+        let shaft_start = Point::new(p1.x + u1.0 * start_offset, p1.y + u1.1 * start_offset);
+        let tip = Point::new(p2.x - u2.0 * tip_inset, p2.y - u2.1 * tip_inset);
         let base_c = Point::new(tip.x - u2.0 * head_len, tip.y - u2.1 * head_len);
-        let left_w = Point::new(base_c.x + perp2.0 * (head_width / 2.0), base_c.y + perp2.1 * (head_width / 2.0));
-        let right_w = Point::new(base_c.x - perp2.0 * (head_width / 2.0), base_c.y - perp2.1 * (head_width / 2.0));
-        let indent = Point::new(base_c.x + u2.0 * (head_len * 0.22), base_c.y + u2.1 * (head_len * 0.22));
 
-        let head_path = Path::new(|builder| {
-            builder.move_to(tip);
-            builder.line_to(left_w);
-            builder.line_to(indent);
-            builder.line_to(right_w);
+        let plus_corner = Point::new(
+            corner.x + (perp1.0 + perp2.0) * hw,
+            corner.y + (perp1.1 + perp2.1) * hw,
+        );
+        let minus_corner = Point::new(
+            corner.x - (perp1.0 + perp2.0) * hw,
+            corner.y - (perp1.1 + perp2.1) * hw,
+        );
+
+        let arrow_path = Path::new(|builder| {
+            builder.move_to(Point::new(shaft_start.x + perp1.0 * hw, shaft_start.y + perp1.1 * hw));
+            builder.line_to(plus_corner);
+            builder.line_to(Point::new(base_c.x + perp2.0 * hw, base_c.y + perp2.1 * hw));
+            builder.line_to(Point::new(
+                base_c.x + perp2.0 * (head_width / 2.0),
+                base_c.y + perp2.1 * (head_width / 2.0),
+            ));
+            builder.line_to(tip);
+            builder.line_to(Point::new(
+                base_c.x - perp2.0 * (head_width / 2.0),
+                base_c.y - perp2.1 * (head_width / 2.0),
+            ));
+            builder.line_to(Point::new(base_c.x - perp2.0 * hw, base_c.y - perp2.1 * hw));
+            builder.line_to(minus_corner);
+            builder.line_to(Point::new(shaft_start.x - perp1.0 * hw, shaft_start.y - perp1.1 * hw));
             builder.close();
         });
-
-        frame.fill(&head_path, arrow_shadow);
-        frame.fill(&head_path, arrow_fill);
+        frame.fill(&arrow_path, arrow_fill);
     } else {
         let u = (dx / dist, dy / dist);
         let perp = (-u.1, u.0);
 
-        let shaft_start = Point::new(p1.x + u.0 * (sq_size * 0.20), p1.y + u.1 * (sq_size * 0.20));
-        let shaft_end = Point::new(p2.x - u.0 * (head_len * 0.82), p2.y - u.1 * (head_len * 0.82));
-
-        let shadow_stroke = Stroke::default()
-            .with_color(arrow_shadow)
-            .with_width(shaft_width + 3.0)
-            .with_line_cap(LineCap::Round);
-
-        let main_stroke = Stroke::default()
-            .with_color(arrow_fill)
-            .with_width(shaft_width)
-            .with_line_cap(LineCap::Round);
-
-        let shaft_path = Path::line(shaft_start, shaft_end);
-        frame.stroke(&shaft_path, shadow_stroke);
-        frame.stroke(&shaft_path, main_stroke);
-
-        let tip = Point::new(p2.x - u.0 * (sq_size * 0.08), p2.y - u.1 * (sq_size * 0.08));
+        let shaft_start = Point::new(p1.x + u.0 * start_offset, p1.y + u.1 * start_offset);
+        let tip = Point::new(p2.x - u.0 * tip_inset, p2.y - u.1 * tip_inset);
         let base_c = Point::new(tip.x - u.0 * head_len, tip.y - u.1 * head_len);
-        let left_w = Point::new(base_c.x + perp.0 * (head_width / 2.0), base_c.y + perp.1 * (head_width / 2.0));
-        let right_w = Point::new(base_c.x - perp.0 * (head_width / 2.0), base_c.y - perp.1 * (head_width / 2.0));
-        let indent = Point::new(base_c.x + u.0 * (head_len * 0.22), base_c.y + u.1 * (head_len * 0.22));
 
-        let head_path = Path::new(|builder| {
-            builder.move_to(tip);
-            builder.line_to(left_w);
-            builder.line_to(indent);
-            builder.line_to(right_w);
+        let arrow_path = Path::new(|builder| {
+            builder.move_to(Point::new(shaft_start.x + perp.0 * hw, shaft_start.y + perp.1 * hw));
+            builder.line_to(Point::new(base_c.x + perp.0 * hw, base_c.y + perp.1 * hw));
+            builder.line_to(Point::new(
+                base_c.x + perp.0 * (head_width / 2.0),
+                base_c.y + perp.1 * (head_width / 2.0),
+            ));
+            builder.line_to(tip);
+            builder.line_to(Point::new(
+                base_c.x - perp.0 * (head_width / 2.0),
+                base_c.y - perp.1 * (head_width / 2.0),
+            ));
+            builder.line_to(Point::new(base_c.x - perp.0 * hw, base_c.y - perp.1 * hw));
+            builder.line_to(Point::new(shaft_start.x - perp.0 * hw, shaft_start.y - perp.1 * hw));
             builder.close();
         });
-
-        frame.fill(&head_path, arrow_shadow);
-        frame.fill(&head_path, arrow_fill);
+        frame.fill(&arrow_path, arrow_fill);
     }
 }
 
@@ -574,4 +777,65 @@ pub fn board_panel<'a, Message: 'a>(position: &Chess, board_el: Element<'a, Mess
         white_tray,
     ]
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_board_metrics_centered_square() {
+        let (size, origin) = board_metrics(Rectangle::new(Point::ORIGIN, Size::new(800.0, 600.0)));
+        assert_eq!(size, 600.0);
+        assert_eq!(origin, Point::new(100.0, 0.0));
+
+        let (size2, origin2) = board_metrics(Rectangle::new(Point::ORIGIN, Size::new(450.0, 650.0)));
+        assert_eq!(size2, 450.0);
+        assert_eq!(origin2, Point::new(0.0, 100.0));
+    }
+
+    #[test]
+    fn test_square_point_roundtrip_unflipped_and_flipped() {
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(720.0, 560.0));
+        let (board_size, origin) = board_metrics(bounds);
+        let sq_size = board_size / 8.0;
+
+        for flipped in [false, true] {
+            let mut widget = BoardWidget::new(Chess::default());
+            widget.flipped = flipped;
+
+            for sq in Square::ALL {
+                let rect = widget.square_to_rect_in_board(sq, sq_size, origin);
+                let center = Point::new(rect.x + sq_size / 2.0, rect.y + sq_size / 2.0);
+                assert_eq!(
+                    widget.point_to_square_in_board(center, board_size, origin),
+                    Some(sq),
+                    "roundtrip failed for {:?} (flipped={})",
+                    sq,
+                    flipped
+                );
+            }
+
+            // Outside the square board area returns None
+            assert_eq!(
+                widget.point_to_square_in_board(Point::new(10.0, 10.0), board_size, origin),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn test_coordinate_square_parity() {
+        // a1 is dark, a8 is light, h1 is light, h8 is dark
+        assert!(!square_is_light(0, 0)); // a1
+        assert!(square_is_light(0, 7));  // a8
+        assert!(square_is_light(7, 0));  // h1
+        assert!(!square_is_light(7, 7)); // h8
+    }
+
+    #[test]
+    fn test_all_twelve_piece_handles_loaded() {
+        let handles = get_piece_handles();
+        assert_eq!(handles.len(), 12);
+    }
 }

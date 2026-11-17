@@ -48,14 +48,12 @@ impl PlayerInfo {
     }
 }
 
-/// Renders a Chess.com-style Player Bar above or below the board:
-/// [Avatar/Color Badge] [Player Name] [Title] [Elo Rating] [Status / Active Indicator]  ...  [Captured Pieces Tray] [+Lead]
-pub fn render_player_bar<'a, Message: 'a>(
+fn render_player_bar_with_width<'a, Message: 'a>(
     player: &PlayerInfo,
     captured: &[Role],
     captured_color: PieceColor,
     material_lead: Option<i32>,
-    bar_width: f32,
+    bar_width: Length,
 ) -> Element<'a, Message> {
     // Avatar / color indicator badge
     let avatar_bg = if player.is_white {
@@ -150,11 +148,11 @@ pub fn render_player_bar<'a, Message: 'a>(
         tray,
     ]
     .align_y(Alignment::Center)
-    .width(Length::Fixed(bar_width));
+    .width(Length::Fill);
 
     container(content)
         .padding([6.0, 10.0])
-        .width(Length::Fixed(bar_width))
+        .width(bar_width)
         .style(|_theme| container::Style {
             background: Some(palette::BG_SURFACE.into()),
             border: border::rounded(6.0).width(1.0).color(palette::BORDER_SUBTLE),
@@ -163,9 +161,27 @@ pub fn render_player_bar<'a, Message: 'a>(
         .into()
 }
 
+/// Renders a Chess.com-style Player Bar above or below the board:
+/// [Avatar/Color Badge] [Player Name] [Title] [Elo Rating] [Status / Active Indicator]  ...  [Captured Pieces Tray] [+Lead]
+pub fn render_player_bar<'a, Message: 'a>(
+    player: &PlayerInfo,
+    captured: &[Role],
+    captured_color: PieceColor,
+    material_lead: Option<i32>,
+    bar_width: f32,
+) -> Element<'a, Message> {
+    render_player_bar_with_width(
+        player,
+        captured,
+        captured_color,
+        material_lead,
+        Length::Fixed(bar_width),
+    )
+}
+
 /// Renders the unified Chess.com Board Column:
 /// - Top player bar
-/// - Center: [Optional Eval Bar] + [Chess Board]
+/// - Center: [Optional Eval Bar] + [Responsive Chess Board]
 /// - Bottom player bar
 pub fn render_unified_board_column<'a, Message: 'a>(
     top_player: &PlayerInfo,
@@ -209,26 +225,41 @@ pub fn render_unified_board_column<'a, Message: 'a>(
         )
     };
 
-    let board_size = 520.0;
-    let eval_bar_w = if eval_bar.is_some() { 32.0 } else { 0.0 };
-    let gap = if eval_bar.is_some() { 8.0 } else { 0.0 };
-    let total_width = board_size + eval_bar_w + gap;
-
-    let top_bar = render_player_bar(top_player, top_captured, top_captured_color, top_lead, total_width);
-    let bottom_bar = render_player_bar(bottom_player, bottom_captured, bottom_captured_color, bottom_lead, total_width);
+    let top_bar = render_player_bar_with_width(
+        top_player,
+        top_captured,
+        top_captured_color,
+        top_lead,
+        Length::Fill,
+    );
+    let bottom_bar = render_player_bar_with_width(
+        bottom_player,
+        bottom_captured,
+        bottom_captured_color,
+        bottom_lead,
+        Length::Fill,
+    );
 
     let board_element = container(
-        board_widget.view(board_size).map(map_board_message)
+        board_widget.view_responsive().map(map_board_message)
     )
-    .style(|_theme| container::Style {
-        border: border::rounded(6.0).width(2.0).color(palette::BORDER),
-        ..Default::default()
-    });
+    .width(Length::Fill)
+    .height(Length::Fill);
 
+    let gap = 8.0;
     let board_row = if let Some(bar) = eval_bar {
-        row![bar, Space::with_width(gap), board_element].align_y(Alignment::Center)
+        let bar_container = container(bar)
+            .height(Length::Shrink)
+            .clip(true);
+        row![bar_container, Space::with_width(gap), board_element]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center)
     } else {
-        row![board_element].align_y(Alignment::Center)
+        row![board_element]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center)
     };
 
     column![
@@ -238,5 +269,7 @@ pub fn render_unified_board_column<'a, Message: 'a>(
         Space::with_height(spacing::XS),
         bottom_bar,
     ]
+    .width(Length::Fill)
+    .height(Length::Fill)
     .into()
 }

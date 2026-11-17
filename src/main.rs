@@ -19,7 +19,7 @@ fn main() -> iced::Result {
         })
         .window(window::Settings {
             size: Size::new(1280.0, 840.0),
-            min_size: Some(Size::new(960.0, 640.0)),
+            min_size: Some(Size::new(1040.0, 700.0)),
             resizable: true,
             decorations: true,
             icon: load_app_icon(),

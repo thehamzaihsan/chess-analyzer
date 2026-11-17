@@ -47,6 +47,33 @@ pub mod palette {
     pub const BOOK: Color = Color::from_rgb(213.0 / 255.0, 164.0 / 255.0, 108.0 / 255.0);
 }
 
+// ==========================================
+// 1b. Chess Board Colors (Classic Chess.com Green/Cream)
+// ==========================================
+pub mod board {
+    use iced::Color;
+
+    // Classic green/cream squares (#EBECD0 / #779556)
+    pub const LIGHT_SQUARE: Color = Color::from_rgb(235.0 / 255.0, 236.0 / 255.0, 208.0 / 255.0);
+    pub const DARK_SQUARE: Color = Color::from_rgb(119.0 / 255.0, 149.0 / 255.0, 86.0 / 255.0);
+
+    // Square state highlights
+    pub const LAST_MOVE: Color = Color::from_rgba(245.0 / 255.0, 246.0 / 255.0, 130.0 / 255.0, 0.52);
+    pub const SELECTED: Color = Color::from_rgba(246.0 / 255.0, 246.0 / 255.0, 105.0 / 255.0, 0.78);
+    pub const SELECTED_BORDER: Color = Color::from_rgba(255.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0, 0.50);
+    pub const CHECK: Color = Color::from_rgba(224.0 / 255.0, 62.0 / 255.0, 56.0 / 255.0, 0.80);
+
+    // Legal move hints & drag hover feedback
+    pub const LEGAL_DOT: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.20);
+    pub const DRAG_TARGET_BORDER: Color = Color::from_rgba(255.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0, 0.65);
+
+    // Semi-transparent engine & annotation arrows
+    pub const ARROW_GREEN: Color = Color::from_rgba(38.0 / 255.0, 182.0 / 255.0, 86.0 / 255.0, 0.78);
+    pub const ARROW_RED: Color = Color::from_rgba(235.0 / 255.0, 75.0 / 255.0, 65.0 / 255.0, 0.78);
+    pub const ARROW_BLUE: Color = Color::from_rgba(59.0 / 255.0, 130.0 / 255.0, 246.0 / 255.0, 0.78);
+    pub const ARROW_ORANGE: Color = Color::from_rgba(245.0 / 255.0, 158.0 / 255.0, 11.0 / 255.0, 0.80);
+}
+
 
 // ==========================================
 // Typography Fonts
