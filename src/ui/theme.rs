@@ -1,6 +1,6 @@
 use crate::analysis::MoveClassification;
-use iced::widget::{button, container, svg, text_input};
-use iced::{border, Color, Theme};
+use iced::widget::{button, container, svg, text, text_input, tooltip};
+use iced::{border, Color, Element, Theme};
 use std::sync::OnceLock;
 
 // ==========================================
@@ -236,6 +236,46 @@ pub fn nav_button_style(selected: bool) -> impl Fn(&Theme, button::Status) -> bu
     }
 }
 
+pub fn segmented_container_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(palette::BG_SURFACE.into()),
+        border: border::rounded(8.0)
+            .color(palette::BORDER_SUBTLE)
+            .width(1.0),
+        text_color: Some(palette::TEXT_PRIMARY),
+        ..Default::default()
+    }
+}
+
+pub fn segmented_button_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        if selected {
+            button::Style {
+                background: Some(palette::BG_ACTIVE.into()),
+                text_color: palette::TEXT_PRIMARY,
+                border: border::rounded(6.0).color(palette::ACCENT).width(1.0),
+                ..Default::default()
+            }
+        } else {
+            let bg = match status {
+                button::Status::Hovered => palette::BG_HOVER,
+                button::Status::Pressed => palette::BG_ELEVATED,
+                _ => Color::TRANSPARENT,
+            };
+            button::Style {
+                background: Some(bg.into()),
+                text_color: if status == button::Status::Hovered {
+                    palette::TEXT_PRIMARY
+                } else {
+                    palette::TEXT_SECONDARY
+                },
+                border: border::rounded(6.0).color(Color::TRANSPARENT).width(1.0),
+                ..Default::default()
+            }
+        }
+    }
+}
+
 pub fn card_container_style(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette::BG_ELEVATED.into()),
@@ -342,6 +382,8 @@ const SVG_REFRESH_CW: &[u8] = include_bytes!("../../assets/icons/lucide/refresh-
 const SVG_CPU: &[u8] = include_bytes!("../../assets/icons/lucide/cpu.svg");
 const SVG_EYE: &[u8] = include_bytes!("../../assets/icons/lucide/eye.svg");
 const SVG_DOWNLOAD: &[u8] = include_bytes!("../../assets/icons/lucide/download.svg");
+const SVG_FLAG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></svg>"#;
+const SVG_HANDSHAKE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/></svg>"#;
 
 const SVG_LOGO: &[u8] = include_bytes!("../../assets/logo.svg");
 static ICON_LOGO: OnceLock<svg::Handle> = OnceLock::new();
@@ -357,6 +399,8 @@ static ICON_REFRESH_CW: OnceLock<svg::Handle> = OnceLock::new();
 static ICON_CPU: OnceLock<svg::Handle> = OnceLock::new();
 static ICON_EYE: OnceLock<svg::Handle> = OnceLock::new();
 static ICON_DOWNLOAD: OnceLock<svg::Handle> = OnceLock::new();
+static ICON_FLAG: OnceLock<svg::Handle> = OnceLock::new();
+static ICON_HANDSHAKE: OnceLock<svg::Handle> = OnceLock::new();
 
 
 pub fn icon_logo() -> svg::Handle {
@@ -456,11 +500,84 @@ pub fn icon_download() -> svg::Handle {
     ICON_DOWNLOAD.get_or_init(|| svg::Handle::from_memory(SVG_DOWNLOAD)).clone()
 }
 
+pub fn icon_flag() -> svg::Handle {
+    ICON_FLAG.get_or_init(|| svg::Handle::from_memory(SVG_FLAG)).clone()
+}
+
+pub fn icon_handshake() -> svg::Handle {
+    ICON_HANDSHAKE.get_or_init(|| svg::Handle::from_memory(SVG_HANDSHAKE)).clone()
+}
+
 pub fn icon_widget<'a>(handle: svg::Handle, size: f32, color: Option<Color>) -> svg::Svg<'a, Theme> {
     let s = svg::Svg::new(handle).width(size).height(size);
     if let Some(c) = color {
         s.style(move |_theme, _status| svg::Style { color: Some(c) })
     } else {
         s
+    }
+}
+
+/// Truncates `s` to at most `max_chars` characters, appending an ellipsis (`…`) if truncated.
+pub fn truncate(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
+}
+
+pub fn tooltip_surface_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(palette::BG_ELEVATED.into()),
+        border: border::rounded(spacing::RADIUS)
+            .color(palette::BORDER)
+            .width(1.0),
+        text_color: Some(palette::TEXT_PRIMARY),
+        ..Default::default()
+    }
+}
+
+pub fn with_tooltip<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    tip: impl Into<String>,
+    pos: tooltip::Position,
+) -> Element<'a, Message> {
+    let tip_str: String = tip.into();
+    tooltip(
+        content,
+        container(
+            text(tip_str)
+                .font(fonts::UI)
+                .size(type_scale::CAPTION)
+                .color(palette::TEXT_PRIMARY)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        )
+        .max_width(340.0)
+        .padding([4.0, 8.0])
+        .style(tooltip_surface_style),
+        pos,
+    )
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_preserves_short_and_appends_ellipsis() {
+        assert_eq!(truncate("Sicilian", 20), "Sicilian");
+        assert_eq!(truncate("Sicilian", 8), "Sicilian");
+        assert_eq!(truncate("Sicilian Defense", 9), "Sicilian…");
+        assert_eq!(truncate("abc", 1), "…");
+        assert_eq!(truncate("abc", 0), "");
     }
 }

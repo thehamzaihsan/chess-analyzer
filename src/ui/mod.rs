@@ -15,7 +15,11 @@ pub use board::{BoardMessage, BoardWidget};
 pub use bots::{BotMessage, BotPlayScreen, BOTS};
 pub use charts::{ChartMessage, EvalGraphMessage, EvalGraphWidget, RatingChart};
 pub use explorer::{ExplorerMessage, ExplorerScreen};
-pub use game_layout::{render_player_bar, render_unified_board_column, PlayerInfo};
+pub use game_layout::{
+    compute_board_layout, render_board_workspace, render_player_bar, render_result_banner,
+    render_result_banner_with_tone, render_sized_board_column, render_unified_board_column,
+    BoardLayoutMetrics, GameOutcome, OutcomeTone, PlayerInfo, PlayerResult,
+};
 pub use game_review::{GameReviewMessage, GameReviewScreen};
 pub use import::{ImportMessage, ImportScreen};
 pub use insights::{InsightsMessage, InsightsScreen};

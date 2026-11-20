@@ -4,14 +4,14 @@ use crate::ui::shell_theme::{
     active_accent_bar_style, dot_style, header_container_style, pill_container_style,
     shell_scrollable_style, sidebar_container_style, sidebar_nav_button_style,
     sidebar_toggle_button_style, status_bar_container_style, subtle_rule_style,
-    tooltip_container_style, BOARD_CONTENT_MAX_HEIGHT, BOARD_CONTENT_MAX_WIDTH, HEADER_HEIGHT,
-    MAX_CONTENT_WIDTH, SIDEBAR_WIDTH_COLLAPSED, SIDEBAR_WIDTH_EXPANDED, STATUS_BAR_HEIGHT,
-    SUCCESS_PILL_BG, SUCCESS_PILL_BORDER, ACTIVE_NAV_BG, ACTIVE_NAV_BORDER,
+    tooltip_container_style, HEADER_HEIGHT, MAX_CONTENT_WIDTH, SIDEBAR_WIDTH_COLLAPSED,
+    SIDEBAR_WIDTH_EXPANDED, STATUS_BAR_HEIGHT, SUCCESS_PILL_BG, SUCCESS_PILL_BORDER,
+    ACTIVE_NAV_BG, ACTIVE_NAV_BORDER,
 };
 use crate::ui::theme::{
     base_container_style, fonts, icon_book_open, icon_bot, icon_chevrons_left,
     icon_chevrons_right, icon_folder_open, icon_insights, icon_logo, icon_puzzle, icon_search,
-    icon_widget, palette, spacing, type_scale,
+    icon_widget, palette, spacing, truncate, type_scale, with_tooltip,
 };
 use iced::widget::{
     button, column, container, horizontal_rule, row, scrollable, text, tooltip, vertical_rule,
@@ -42,6 +42,19 @@ pub struct ShellContext<'a> {
     pub explorer_opening: &'a str,
     pub explorer_eco: &'a str,
     pub explorer_plies: usize,
+}
+
+pub fn board_workspace_available_size(window_size: iced::Size, sidebar_collapsed: bool) -> iced::Size {
+    let sidebar_w = if sidebar_collapsed {
+        SIDEBAR_WIDTH_COLLAPSED
+    } else {
+        SIDEBAR_WIDTH_EXPANDED
+    } + 1.0;
+    let content_w = (window_size.width - sidebar_w - spacing::XS * 2.0).max(400.0);
+    let content_h =
+        (window_size.height - HEADER_HEIGHT - STATUS_BAR_HEIGHT - 2.0 - spacing::XS * 2.0)
+            .max(320.0);
+    iced::Size::new(content_w, content_h)
 }
 
 pub fn render_shell<'a>(
@@ -116,21 +129,26 @@ fn render_sidebar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
                     text("Chess Analyzer")
                         .font(fonts::UI_BOLD)
                         .size(14.5)
-                        .color(palette::TEXT_PRIMARY),
+                        .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::None),
                     text("Analysis Studio")
                         .font(fonts::UI)
                         .size(10.5)
-                        .color(palette::TEXT_MUTED),
+                        .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::None),
                 ]
-                .spacing(1.0),
+                .spacing(1.0)
+                .width(Length::Fill),
             ]
             .spacing(spacing::XS)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .width(Length::Fill),
         )
         .padding([0.0, spacing::SM])
         .width(Length::Fill)
         .height(Length::Fill)
         .align_y(Alignment::Center)
+        .clip(true)
         .into()
     };
 
@@ -149,7 +167,8 @@ fn render_sidebar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
                 text(label)
                     .font(fonts::UI_BOLD)
                     .size(10.5)
-                    .color(palette::TEXT_MUTED),
+                    .color(palette::TEXT_MUTED)
+                    .wrapping(text::Wrapping::None),
             )
             .padding(iced::Padding {
                 top: spacing::SM,
@@ -158,6 +177,7 @@ fn render_sidebar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
                 left: spacing::SM,
             })
             .width(Length::Fill)
+            .clip(true)
             .into()
         }
     };
@@ -269,14 +289,19 @@ fn render_sidebar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
         .into()
     } else {
         button(
-            row![
-                icon_widget(icon_chevrons_left(), 15.0, Some(palette::TEXT_MUTED)),
-                text("Collapse Sidebar")
-                    .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::CAPTION),
-            ]
-            .spacing(spacing::XS)
-            .align_y(Alignment::Center),
+            container(
+                row![
+                    icon_widget(icon_chevrons_left(), 15.0, Some(palette::TEXT_MUTED)),
+                    text("Collapse Sidebar")
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(spacing::XS)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .clip(true),
         )
         .padding([spacing::XS, spacing::SM])
         .width(Length::Fill)
@@ -302,6 +327,7 @@ fn render_sidebar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
     )
     .width(Length::Fixed(width))
     .height(Length::Fill)
+    .clip(true)
     .style(sidebar_container_style)
     .into()
 }
@@ -354,13 +380,18 @@ fn nav_item<'a>(
         )
         .into()
     } else {
-        let label_text = text(label)
-            .font(if selected {
-                fonts::UI_SEMIBOLD
-            } else {
-                fonts::UI
-            })
-            .size(13.5);
+        let label_text = container(
+            text(label)
+                .font(if selected {
+                    fonts::UI_SEMIBOLD
+                } else {
+                    fonts::UI
+                })
+                .size(13.5)
+                .wrapping(text::Wrapping::None),
+        )
+        .width(Length::Fill)
+        .clip(true);
 
         let mut content = row![
             accent_bar,
@@ -391,12 +422,13 @@ fn nav_item<'a>(
                         palette::ACCENT_HOVER
                     } else {
                         palette::TEXT_SECONDARY
-                    }),
+                    })
+                    .wrapping(text::Wrapping::None),
             )
             .padding([1.0, 6.0])
             .style(pill_container_style(badge_bg, badge_border));
 
-            content = content.push(Space::with_width(Length::Fill)).push(pill);
+            content = content.push(pill);
         }
 
         button(content)
@@ -417,8 +449,10 @@ fn render_page_header<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
         Tab::GameReview => {
             let sub = match ctx.selected_game {
                 Some(g) => {
-                    let opening_part = if !g.opening.is_empty() && g.opening != "?" {
-                        format!("  •  {}", g.opening)
+                    let (_, resolved_opening) =
+                        crate::pgn::resolve_opening_display(&g.opening, &g.eco, &g.pgn);
+                    let opening_part = if !resolved_opening.is_empty() {
+                        format!("  •  {}", resolved_opening)
                     } else {
                         String::new()
                     };
@@ -459,28 +493,39 @@ fn render_page_header<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
         }
     };
 
+    let short_sub = truncate(&subtitle, 56);
+    let sub_text = text(short_sub.clone())
+        .font(fonts::UI)
+        .size(12.5)
+        .color(palette::TEXT_SECONDARY)
+        .wrapping(text::Wrapping::None);
+    let sub_el: Element<'a, AppMessage> = if short_sub != subtitle {
+        with_tooltip(sub_text, subtitle, tooltip::Position::Bottom)
+    } else {
+        sub_text.into()
+    };
+
     let left = row![
         text(title)
             .font(fonts::UI_BOLD)
             .size(16.0)
-            .color(palette::TEXT_PRIMARY),
+            .color(palette::TEXT_PRIMARY)
+            .wrapping(text::Wrapping::None),
         container(Space::new(Length::Fixed(1.0), Length::Fixed(14.0))).style(|_| {
             container::Style {
                 background: Some(palette::BORDER.into()),
                 ..Default::default()
             }
         }),
-        text(subtitle)
-            .font(fonts::UI)
-            .size(12.5)
-            .color(palette::TEXT_SECONDARY),
+        container(sub_el).width(Length::Fill).clip(true),
     ]
     .spacing(spacing::SM)
+    .width(Length::Fill)
     .align_y(Alignment::Center);
 
     let right_pills = render_header_pills(ctx);
 
-    let header_row = row![left, Space::with_width(Length::Fill), right_pills]
+    let header_row = row![left, Space::with_width(spacing::SM), right_pills]
         .padding([0.0, spacing::LG])
         .width(Length::Fill)
         .height(Length::Fill)
@@ -489,6 +534,7 @@ fn render_page_header<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
     container(header_row)
         .width(Length::Fill)
         .height(Length::Fixed(HEADER_HEIGHT))
+        .clip(true)
         .style(header_container_style)
         .into()
 }
@@ -521,7 +567,7 @@ fn render_header_pills<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
         Tab::GameReview => {
             if let Some(g) = ctx.selected_game {
                 pills = pills.push(header_pill(
-                    g.result.clone(),
+                    truncate(&g.result, 10),
                     palette::TEXT_PRIMARY,
                     palette::BG_ELEVATED,
                     palette::BORDER,
@@ -550,7 +596,7 @@ fn render_header_pills<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
         Tab::Puzzles => {
             if let Some(filter) = ctx.puzzle_filter {
                 pills = pills.push(header_pill(
-                    format!("Filter: {}", filter),
+                    format!("Filter: {}", truncate(filter, 14)),
                     palette::ACCENT_HOVER,
                     ACTIVE_NAV_BG,
                     ACTIVE_NAV_BORDER,
@@ -577,7 +623,7 @@ fn render_header_pills<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
             let label = if ctx.explorer_eco.is_empty() {
                 "Starting Position".to_string()
             } else {
-                format!("ECO {}", ctx.explorer_eco)
+                format!("ECO {}", truncate(ctx.explorer_eco, 10))
             };
             pills = pills.push(header_pill(
                 label,
@@ -601,9 +647,11 @@ fn header_pill<'a>(
         text(label)
             .font(fonts::MONO_BOLD)
             .size(type_scale::CAPTION)
-            .color(text_color),
+            .color(text_color)
+            .wrapping(text::Wrapping::None),
     )
     .padding([3.0, 9.0])
+    .clip(true)
     .style(pill_container_style(bg, border_color))
     .into()
 }
@@ -629,34 +677,14 @@ fn render_content_area<'a>(
                 .style(base_container_style)
                 .into()
         }
-        // Board-centric screens have fixed 520px boards and two-column layouts;
-        // give the inner workspace fixed target dimensions inside a bidirectional
-        // scrollable so smaller windows scroll cleanly rather than clipping,
-        // without violating Iced's rule against Length::Fill inside a scrollable.
-        Tab::GameReview | Tab::Puzzles | Tab::Bots | Tab::Explorer => {
-            let bounded = container(main_view)
-                .width(Length::Fixed(BOARD_CONTENT_MAX_WIDTH))
-                .height(Length::Fixed(BOARD_CONTENT_MAX_HEIGHT));
-
-            let padded = container(bounded).padding([spacing::XS, spacing::SM]);
-
-            let scroll_view = scrollable::Scrollable::with_direction(
-                padded,
-                scrollable::Direction::Both {
-                    vertical: scrollable::Scrollbar::new().width(6).scroller_width(6),
-                    horizontal: scrollable::Scrollbar::new().width(6).scroller_width(6),
-                },
-            )
+        // Board-centric screens size themselves responsively to fill all available space.
+        Tab::GameReview | Tab::Puzzles | Tab::Bots | Tab::Explorer => container(main_view)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(shell_scrollable_style);
-
-            container(scroll_view)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(base_container_style)
-                .into()
-        }
+            .padding([spacing::XS, spacing::XS])
+            .clip(true)
+            .style(base_container_style)
+            .into(),
     }
 }
 
@@ -674,15 +702,26 @@ fn render_status_bar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
         })
     };
 
-    let player_item = row![
-        status_dot(palette::ACCENT),
-        text(format!("Player: {}", ctx.player_username))
-            .font(fonts::UI_SEMIBOLD)
-            .size(11.5)
-            .color(palette::TEXT_PRIMARY),
-    ]
-    .spacing(6.0)
-    .align_y(Alignment::Center);
+    let player_full = if ctx.player_username.trim().is_empty() {
+        "All Players".to_string()
+    } else {
+        ctx.player_username.to_string()
+    };
+    let player_short = truncate(&player_full, 18);
+    let player_text = text(format!("Player: {}", player_short))
+        .font(fonts::UI_SEMIBOLD)
+        .size(11.5)
+        .color(palette::TEXT_PRIMARY)
+        .wrapping(text::Wrapping::None);
+    let player_label: Element<'a, AppMessage> = if player_short != player_full {
+        with_tooltip(player_text, player_full, tooltip::Position::Top)
+    } else {
+        player_text.into()
+    };
+
+    let player_item = row![status_dot(palette::ACCENT), player_label]
+        .spacing(6.0)
+        .align_y(Alignment::Center);
 
     let games_item = text(format!(
         "{} games  •  {} analyzed",
@@ -690,7 +729,8 @@ fn render_status_bar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
     ))
     .font(fonts::MONO)
     .size(11.5)
-    .color(palette::TEXT_SECONDARY);
+    .color(palette::TEXT_SECONDARY)
+    .wrapping(text::Wrapping::None);
 
     let (engine_color, engine_label) = if ctx.engine_available {
         (palette::SUCCESS, "Stockfish Ready")
@@ -707,26 +747,13 @@ fn render_status_bar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
                 palette::TEXT_SECONDARY
             } else {
                 palette::WARNING
-            }),
+            })
+            .wrapping(text::Wrapping::None),
     ]
     .spacing(6.0)
     .align_y(Alignment::Center);
 
-    let mut bar = row![
-        player_item,
-        divider(),
-        games_item,
-        divider(),
-        engine_item,
-        Space::with_width(Length::Fill),
-    ]
-    .spacing(spacing::SM)
-    .padding([0.0, spacing::MD])
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .align_y(Alignment::Center);
-
-    if let Some(msg) = ctx.import_status {
+    let status_el: Element<'a, AppMessage> = if let Some(msg) = ctx.import_status {
         let msg_color = if ctx.import_loading {
             palette::ACCENT_HOVER
         } else {
@@ -738,19 +765,49 @@ fn render_status_bar<'a>(ctx: &ShellContext<'a>) -> Element<'a, AppMessage> {
             palette::TEXT_MUTED
         };
 
-        let status_item = row![
-            status_dot(dot_color),
-            text(msg).font(fonts::UI).size(11.5).color(msg_color),
-        ]
-        .spacing(6.0)
-        .align_y(Alignment::Center);
+        let short_msg = truncate(msg, 58);
+        let msg_text = text(short_msg.clone())
+            .font(fonts::UI)
+            .size(11.5)
+            .color(msg_color)
+            .wrapping(text::Wrapping::None);
+        let msg_widget: Element<'a, AppMessage> = if short_msg != msg {
+            with_tooltip(msg_text, msg, tooltip::Position::Top)
+        } else {
+            msg_text.into()
+        };
 
-        bar = bar.push(status_item);
-    }
+        let status_item = row![status_dot(dot_color), msg_widget]
+            .spacing(6.0)
+            .align_y(Alignment::Center);
+
+        container(status_item)
+            .width(Length::Fill)
+            .align_x(Alignment::End)
+            .clip(true)
+            .into()
+    } else {
+        Space::with_width(Length::Fill).into()
+    };
+
+    let bar = row![
+        player_item,
+        divider(),
+        games_item,
+        divider(),
+        engine_item,
+        status_el,
+    ]
+    .spacing(spacing::SM)
+    .padding([0.0, spacing::MD])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_y(Alignment::Center);
 
     container(bar)
         .width(Length::Fill)
         .height(Length::Fixed(STATUS_BAR_HEIGHT))
+        .clip(true)
         .style(status_bar_container_style)
         .into()
 }

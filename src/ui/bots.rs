@@ -1,12 +1,18 @@
 use crate::ui::board::{BoardMessage, BoardWidget};
-use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
+use crate::ui::game_layout::{
+    compute_board_layout, render_board_workspace, render_result_banner_with_tone,
+    render_sized_board_column, GameOutcome, OutcomeTone, PlayerInfo, PlayerResult,
+};
 use crate::ui::theme::{
-    card_container_style, danger_button_style, fonts, icon_play, icon_refresh_cw, icon_widget,
-    nav_button_style, palette, primary_button_style, secondary_button_style, spacing, type_scale,
+    badge_container_style, card_container_style, danger_button_style, fonts, icon_flag, icon_play,
+    icon_refresh_cw, icon_widget, palette, primary_button_style, secondary_button_style,
+    segmented_button_style, segmented_container_style, spacing, truncate, type_scale,
+    with_tooltip,
 };
 use iced::border;
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{button, column, container, row, scrollable, text, tooltip, Space};
 use iced::{Alignment, Element, Length};
+use shakmaty::san::SanPlus;
 use shakmaty::{CastlingMode, Chess, Color, EnPassantMode, Move, Position, Role, Square};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +30,7 @@ pub enum BotMessage {
     SelectBot(usize),
     SelectColor(PlayerColorChoice),
     NewGame,
+    Resign,
     SelectPromotion(Role),
     CancelPromotion,
     RetryBotMove,
@@ -91,7 +98,9 @@ pub struct BotPlayScreen {
     pub pending_promotion: Option<(Square, Square)>,
     pub engine_error: Option<String>,
     pub is_game_over: bool,
+    pub game_outcome: Option<GameOutcome>,
     pub position_counts: HashMap<String, u32>,
+    pub move_history: Vec<String>,
 }
 
 impl BotPlayScreen {
@@ -111,7 +120,9 @@ impl BotPlayScreen {
             pending_promotion: None,
             engine_error: None,
             is_game_over: false,
+            game_outcome: None,
             position_counts,
+            move_history: Vec::new(),
         }
     }
 
@@ -131,24 +142,52 @@ impl BotPlayScreen {
         *entry
     }
 
-    fn evaluate_game_over(&self, user_just_moved: bool, rep_count: u32) -> Option<String> {
+    fn evaluate_game_over(
+        &self,
+        user_just_moved: bool,
+        rep_count: u32,
+    ) -> Option<(GameOutcome, String)> {
         let pos = &self.board_widget.position;
         if pos.is_checkmate() {
             if user_just_moved {
-                Some("Checkmate! You won!".to_string())
+                let res = if self.player_is_white { "1-0" } else { "0-1" };
+                Some((
+                    GameOutcome::new(res, "Checkmate — You won!"),
+                    "Checkmate! You won!".to_string(),
+                ))
             } else {
-                Some(format!("Checkmate! {} won.", self.current_bot().name))
+                let res = if self.player_is_white { "0-1" } else { "1-0" };
+                let bot_name = self.current_bot().name;
+                Some((
+                    GameOutcome::new(res, format!("Checkmate — {} won", bot_name)),
+                    format!("Checkmate! {} won.", bot_name),
+                ))
             }
         } else if pos.is_stalemate() {
-            Some("Draw by stalemate.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by stalemate"),
+                "Draw by stalemate.".to_string(),
+            ))
         } else if pos.is_insufficient_material() {
-            Some("Draw by insufficient material.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by insufficient material"),
+                "Draw by insufficient material.".to_string(),
+            ))
         } else if rep_count >= 3 {
-            Some("Draw by threefold repetition.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by repetition"),
+                "Draw by threefold repetition.".to_string(),
+            ))
         } else if pos.halfmoves() >= 100 {
-            Some("Draw by 50-move rule.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Draw by 50-move rule"),
+                "Draw by 50-move rule.".to_string(),
+            ))
         } else if pos.is_game_over() {
-            Some("Game drawn.".to_string())
+            Some((
+                GameOutcome::new("1/2-1/2", "Game drawn"),
+                "Game drawn.".to_string(),
+            ))
         } else {
             None
         }
@@ -169,10 +208,13 @@ impl BotPlayScreen {
         let pos = Chess::default();
         self.board_widget = BoardWidget::new(pos);
         self.board_widget.flipped = !self.player_is_white;
+        self.board_widget.interactive = true;
         self.pending_promotion = None;
         self.engine_error = None;
         self.is_game_over = false;
+        self.game_outcome = None;
         self.position_counts.clear();
+        self.move_history.clear();
         self.record_current_position();
 
         if !self.player_is_white {
@@ -184,6 +226,23 @@ impl BotPlayScreen {
             self.game_status = "New game started! Your turn (White to move).".to_string();
             None
         }
+    }
+
+    pub fn resign(&mut self) {
+        if self.is_game_over {
+            return;
+        }
+        crate::audio::play_sound(crate::audio::SoundType::GameEnd);
+        self.game_generation = self.game_generation.wrapping_add(1);
+        self.is_engine_thinking = false;
+        self.is_game_over = true;
+        self.pending_promotion = None;
+        self.engine_error = None;
+        self.board_widget.selected_square = None;
+        self.board_widget.interactive = false;
+        let res = if self.player_is_white { "0-1" } else { "1-0" };
+        self.game_outcome = Some(GameOutcome::new(res, "You resigned"));
+        self.game_status = format!("You resigned — {} won.", self.current_bot().name);
     }
 
     pub fn handle_square_clicked(&mut self, sq: Square) -> Option<String> {
@@ -268,6 +327,7 @@ impl BotPlayScreen {
     fn apply_user_move(&mut self, m: Move) -> Option<String> {
         let from = m.from().unwrap_or(m.to());
         let to = m.to();
+        let san = SanPlus::from_move(self.board_widget.position.clone(), m.clone()).to_string();
         if let Ok(next_pos) = self.board_widget.position.clone().play(m.clone()) {
             let sound = crate::audio::sound_for_move(&m, &next_pos);
             crate::audio::play_sound(sound);
@@ -276,12 +336,15 @@ impl BotPlayScreen {
             self.board_widget.selected_square = None;
             self.pending_promotion = None;
             self.engine_error = None;
+            self.move_history.push(san);
 
             let rep_count = self.record_current_position();
-            if let Some(status) = self.evaluate_game_over(true, rep_count) {
+            if let Some((outcome, status)) = self.evaluate_game_over(true, rep_count) {
                 crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                 self.is_game_over = true;
                 self.is_engine_thinking = false;
+                self.board_widget.interactive = false;
+                self.game_outcome = Some(outcome);
                 self.game_status = status;
                 return None;
             }
@@ -347,6 +410,11 @@ impl BotPlayScreen {
 
                 let from = valid_m.from().unwrap_or(valid_m.to());
                 let to = valid_m.to();
+                let san = SanPlus::from_move(
+                    self.board_widget.position.clone(),
+                    valid_m.clone(),
+                )
+                .to_string();
                 match self.board_widget.position.clone().play(valid_m.clone()) {
                     Ok(next_pos) => {
                         let sound = crate::audio::sound_for_move(&valid_m, &next_pos);
@@ -354,11 +422,14 @@ impl BotPlayScreen {
                         self.board_widget.position = next_pos;
                         self.board_widget.last_move = Some((from, to));
                         self.engine_error = None;
+                        self.move_history.push(san);
 
                         let rep_count = self.record_current_position();
-                        if let Some(status) = self.evaluate_game_over(false, rep_count) {
+                        if let Some((outcome, status)) = self.evaluate_game_over(false, rep_count) {
                             crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                             self.is_game_over = true;
+                            self.board_widget.interactive = false;
+                            self.game_outcome = Some(outcome);
                             self.game_status = status;
                         } else {
                             self.game_status = "Your turn! Make your move.".to_string();
@@ -406,272 +477,490 @@ impl BotPlayScreen {
         self.apply_engine_result(self.game_generation, Ok(uci_str.to_string()));
     }
 
-    pub fn view<'a>(&'a self) -> Element<'a, BotMessage> {
-        let bot = self.current_bot();
-        let is_white_turn = self.board_widget.position.turn() == Color::White;
+    pub fn view<'a>(&'a self, avail_size: iced::Size) -> Element<'a, BotMessage> {
+        let metrics = compute_board_layout(avail_size, false);
+            let bot = self.current_bot();
+            let is_white_turn = self.board_widget.position.turn() == Color::White;
 
-        let bot_is_white = !self.player_is_white;
-        let bot_active = !self.is_game_over && (is_white_turn == bot_is_white);
-        let player_active = !self.is_game_over && (is_white_turn == self.player_is_white);
+            let bot_is_white = !self.player_is_white;
+            let bot_active = !self.is_game_over && (is_white_turn == bot_is_white);
+            let player_active = !self.is_game_over && (is_white_turn == self.player_is_white);
 
-        let bot_status = if self.is_game_over {
-            "Game Over"
-        } else if self.is_engine_thinking {
-            "Thinking..."
-        } else if self.engine_error.is_some() && !self.is_player_turn() {
-            "Error"
-        } else {
-            "Bot"
-        };
+            let bot_result = self
+                .game_outcome
+                .as_ref()
+                .and_then(|o| o.player_result(bot_is_white));
+            let user_result = self
+                .game_outcome
+                .as_ref()
+                .and_then(|o| o.player_result(self.player_is_white));
 
-        let user_status = if self.is_game_over {
-            "Game Over"
-        } else if self.is_engine_thinking {
-            "Waiting..."
-        } else if self.engine_error.is_some() && !self.is_player_turn() {
-            "Waiting..."
-        } else {
-            "Your turn"
-        };
+            let bot_status = if self.is_game_over {
+                "Game Over"
+            } else if self.is_engine_thinking {
+                "Thinking..."
+            } else if self.engine_error.is_some() && !self.is_player_turn() {
+                "Error"
+            } else {
+                "Bot"
+            };
 
-        let bot_player = PlayerInfo::new(bot.name, bot_is_white)
-            .with_rating(Some(bot.elo as i32))
-            .with_title(bot.title)
-            .with_status(bot_status)
-            .with_active_turn(bot_active);
+            let user_status = if self.is_game_over {
+                "Game Over"
+            } else if self.is_engine_thinking {
+                "Waiting..."
+            } else if self.engine_error.is_some() && !self.is_player_turn() {
+                "Waiting..."
+            } else {
+                "Your turn"
+            };
 
-        let user_player = PlayerInfo::new("You", self.player_is_white)
-            .with_status(user_status)
-            .with_active_turn(player_active);
+            let bot_player = PlayerInfo::new(bot.name, bot_is_white)
+                .with_rating(Some(bot.elo as i32))
+                .with_title(bot.title)
+                .with_status(bot_status)
+                .with_active_turn(bot_active)
+                .with_result(bot_result);
 
-        // board_widget.flipped is always !player_is_white, so user is always at the bottom.
-        let (top_player, bottom_player) = (&bot_player, &user_player);
+            let user_player = PlayerInfo::new("You", self.player_is_white)
+                .with_status(user_status)
+                .with_active_turn(player_active)
+                .with_result(user_result);
 
-        let board_el = render_unified_board_column(
-            top_player,
-            bottom_player,
-            &self.board_widget.position,
-            &self.board_widget,
-            BotMessage::Board,
-            None,
-        );
+            // board_widget.flipped is always !player_is_white, so user is always at the bottom.
+            let (top_player, bottom_player) = (&bot_player, &user_player);
 
-        let title = text("Play Human-Like Personality Bots")
-            .font(fonts::UI_BOLD)
-            .size(type_scale::TITLE)
-            .color(palette::TEXT_PRIMARY);
+            let board_el = render_sized_board_column(
+                top_player,
+                bottom_player,
+                &self.board_widget.position,
+                &self.board_widget,
+                BotMessage::Board,
+                None,
+                metrics.board_side,
+            );
 
-        let subtitle = text("Practice against realistic calibrated opponents from Beginner to Master.")
-            .font(fonts::UI)
-            .size(type_scale::BODY)
-            .color(palette::TEXT_SECONDARY);
-
-        let make_color_btn = |choice: PlayerColorChoice, label: &'static str| {
-            let is_sel = self.color_choice == choice;
-            button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                .padding([spacing::XS, spacing::SM])
-                .style(nav_button_style(is_sel))
+            // 1. Grouped Controls Card (Play As + New Game / Resign + Status)
+            let make_color_btn = |choice: PlayerColorChoice, label: &'static str| {
+                let is_sel = self.color_choice == choice;
+                button(
+                    container(
+                        text(label)
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+                )
+                .width(Length::FillPortion(1))
+                .padding([spacing::XXS, spacing::XS])
+                .style(segmented_button_style(is_sel))
                 .on_press(BotMessage::SelectColor(choice))
-        };
+            };
 
-        let color_row = row![
-            text("Play as:")
+            let color_segmented = container(
+                row![
+                    make_color_btn(PlayerColorChoice::White, "White"),
+                    make_color_btn(PlayerColorChoice::Black, "Black"),
+                    make_color_btn(PlayerColorChoice::Random, "Random"),
+                ]
+                .spacing(2.0)
+                .width(Length::Fill),
+            )
+            .padding(2.0)
+            .width(Length::Fill)
+            .style(segmented_container_style);
+
+            let color_row = row![
+                text("Side:")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::CAPTION)
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None),
+                color_segmented,
+            ]
+            .spacing(spacing::XS)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+
+            let new_game_label = if self.is_game_over {
+                "Rematch / New Game"
+            } else {
+                "New Game"
+            };
+            let new_game_btn = button(
+                container(
+                    row![
+                        icon_widget(icon_play(), 13.0, Some(palette::TEXT_PRIMARY)),
+                        text(new_game_label)
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::FillPortion(1))
+            .padding([spacing::XS, spacing::SM])
+            .style(primary_button_style)
+            .on_press(BotMessage::NewGame);
+
+            let resign_btn = button(
+                container(
+                    row![
+                        icon_widget(icon_flag(), 13.0, Some(palette::TEXT_PRIMARY)),
+                        text("Resign")
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::FillPortion(1))
+            .padding([spacing::XS, spacing::SM])
+            .style(danger_button_style)
+            .on_press(BotMessage::Resign);
+
+            let action_row = if self.is_game_over {
+                row![new_game_btn].spacing(spacing::XS).width(Length::Fill)
+            } else {
+                row![new_game_btn, resign_btn]
+                    .spacing(spacing::XS)
+                    .width(Length::Fill)
+            };
+
+            let status_color = if self.engine_error.is_some() {
+                palette::DANGER
+            } else if self.is_engine_thinking {
+                palette::ACCENT
+            } else {
+                palette::TEXT_SECONDARY
+            };
+
+            let status_txt = text(&self.game_status)
                 .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY)
-                .color(palette::TEXT_SECONDARY),
-            make_color_btn(PlayerColorChoice::White, "White"),
-            make_color_btn(PlayerColorChoice::Black, "Black"),
-            make_color_btn(PlayerColorChoice::Random, "Random"),
-        ]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
-
-        let mut bot_cards = column![].spacing(spacing::XS);
-        for (i, bot) in BOTS.iter().enumerate() {
-            let is_selected = self.selected_bot_idx == i;
-            let elo_badge = text(format!("{} Elo", bot.elo))
-                .font(fonts::MONO_BOLD)
                 .size(type_scale::CAPTION)
-                .color(palette::ACCENT);
+                .color(status_color)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .width(Length::Fill);
 
-            let header = row![
-                text(bot.name)
+            let controls_card = container(
+                column![color_row, action_row, status_txt]
+                    .spacing(spacing::XS)
+                    .width(Length::Fill),
+            )
+            .padding(spacing::SM)
+            .width(Length::Fill)
+            .clip(true)
+            .style(card_container_style);
+
+            let mut side_col = column![controls_card]
+                .spacing(spacing::XS)
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            if self.is_game_over {
+                if let Some(ref outcome) = self.game_outcome {
+                    let tone = match user_result {
+                        Some(PlayerResult::Win) => OutcomeTone::Win,
+                        Some(PlayerResult::Loss) => OutcomeTone::Loss,
+                        _ => OutcomeTone::Draw,
+                    };
+                    side_col = side_col.push(render_result_banner_with_tone(outcome, tone));
+                }
+            }
+
+            if self.pending_promotion.is_some() {
+                let promo_btn = |role: Role, label: &'static str| {
+                    button(
+                        text(label)
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([spacing::XXS, spacing::XS])
+                    .style(primary_button_style)
+                    .on_press(BotMessage::SelectPromotion(role))
+                };
+
+                let promo_box = container(
+                    column![
+                        text("Promote Pawn To:")
+                            .font(fonts::UI_BOLD)
+                            .size(type_scale::BODY)
+                            .color(palette::TEXT_PRIMARY),
+                        row![
+                            promo_btn(Role::Queen, "Queen"),
+                            promo_btn(Role::Rook, "Rook"),
+                            promo_btn(Role::Bishop, "Bishop"),
+                            promo_btn(Role::Knight, "Knight"),
+                            button(
+                                text("Cancel")
+                                    .font(fonts::UI)
+                                    .size(type_scale::CAPTION)
+                                    .wrapping(text::Wrapping::None)
+                            )
+                            .padding([spacing::XXS, spacing::XS])
+                            .style(secondary_button_style)
+                            .on_press(BotMessage::CancelPromotion),
+                        ]
+                        .spacing(spacing::XXS),
+                    ]
+                    .spacing(spacing::XS)
+                    .width(Length::Fill),
+                )
+                .padding(spacing::SM)
+                .width(Length::Fill)
+                .clip(true)
+                .style(card_container_style);
+
+                side_col = side_col.push(promo_box);
+            }
+
+            if self.engine_error.is_some() && !self.is_game_over && !self.is_player_turn() {
+                let retry_btn = button(
+                    row![
+                        icon_widget(icon_refresh_cw(), 13.0, Some(palette::TEXT_PRIMARY)),
+                        text("Retry Engine")
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center),
+                )
+                .padding([spacing::XS, spacing::SM])
+                .style(danger_button_style)
+                .on_press(BotMessage::RetryBotMove);
+
+                let fallback_btn = button(
+                    text("Play Random Move")
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::CAPTION)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([spacing::XS, spacing::SM])
+                .style(secondary_button_style)
+                .on_press(BotMessage::PlayFallbackMove);
+
+                let recovery_box = container(
+                    row![retry_btn, fallback_btn]
+                        .spacing(spacing::XS)
+                        .align_y(Alignment::Center),
+                )
+                .padding(spacing::SM)
+                .width(Length::Fill)
+                .clip(true)
+                .style(card_container_style);
+
+                side_col = side_col.push(recovery_box);
+            }
+
+            // 2. Scrollable Opponent Selector
+            let mut bot_cards = column![].spacing(spacing::XS).width(Length::Fill);
+            for (i, b) in BOTS.iter().enumerate() {
+                let is_selected = self.selected_bot_idx == i;
+                let elo_badge = text(format!("{} Elo", b.elo))
+                    .font(fonts::MONO_BOLD)
+                    .size(type_scale::CAPTION)
+                    .color(palette::ACCENT)
+                    .wrapping(text::Wrapping::None);
+
+                let name_short = truncate(b.name, 22);
+                let name_txt = text(name_short.clone())
                     .font(fonts::UI_BOLD)
-                    .size(type_scale::HEADING)
+                    .size(type_scale::BODY)
                     .color(if is_selected {
                         palette::TEXT_PRIMARY
                     } else {
                         palette::TEXT_SECONDARY
-                    }),
-                Space::with_width(spacing::XS),
-                text(format!("({})", bot.title))
-                    .font(fonts::UI)
-                    .size(type_scale::CAPTION)
-                    .color(palette::TEXT_MUTED),
-                Space::with_width(Length::Fill),
-                elo_badge,
-            ]
-            .align_y(Alignment::Center);
-
-            let card = button(
-                column![
-                    header,
-                    Space::with_height(spacing::XXS),
-                    text(bot.bio)
-                        .font(fonts::UI)
-                        .size(type_scale::BODY)
-                        .color(palette::TEXT_MUTED),
-                ]
-                .spacing(spacing::XXS),
-            )
-            .padding(spacing::SM)
-            .width(Length::Fill)
-            .style(move |_theme, _status| {
-                if is_selected {
-                    button::Style {
-                        background: Some(palette::BG_ELEVATED.into()),
-                        border: border::rounded(spacing::RADIUS)
-                            .color(palette::ACCENT)
-                            .width(2.0),
-                        ..Default::default()
-                    }
+                    })
+                    .wrapping(text::Wrapping::None);
+                let name_el: Element<'a, BotMessage> = if name_short != b.name {
+                    with_tooltip(name_txt, b.name, tooltip::Position::Top)
                 } else {
-                    button::Style {
-                        background: Some(palette::BG_SURFACE.into()),
-                        border: border::rounded(spacing::RADIUS)
-                            .color(palette::BORDER_SUBTLE)
-                            .width(1.0),
-                        ..Default::default()
-                    }
-                }
-            })
-            .on_press(BotMessage::SelectBot(i));
+                    name_txt.into()
+                };
 
-            bot_cards = bot_cards.push(card);
-        }
+                let header = row![
+                    container(
+                        row![
+                            name_el,
+                            Space::with_width(spacing::XS),
+                            text(format!("({})", b.title))
+                                .font(fonts::UI)
+                                .size(type_scale::CAPTION)
+                                .color(palette::TEXT_MUTED)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .clip(true),
+                    Space::with_width(spacing::XS),
+                    elo_badge,
+                ]
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
 
-        let new_game_content = row![
-            icon_widget(icon_play(), 14.0, Some(palette::TEXT_PRIMARY)),
-            text("Start New Game")
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY),
-        ]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
-
-        let new_game_btn = button(new_game_content)
-            .padding([spacing::SM, spacing::MD])
-            .style(primary_button_style)
-            .on_press(BotMessage::NewGame);
-
-        let status_color = if self.engine_error.is_some() {
-            palette::DANGER
-        } else if self.is_engine_thinking {
-            palette::ACCENT
-        } else {
-            palette::TEXT_PRIMARY
-        };
-
-        let status_box = container(
-            row![text(&self.game_status)
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::HEADING)
-                .color(status_color),]
-            .align_y(Alignment::Center),
-        )
-        .padding(spacing::SM)
-        .width(Length::Fill)
-        .style(card_container_style);
-
-        let mut side_col = column![
-            title,
-            subtitle,
-            Space::with_height(spacing::XS),
-            color_row,
-            Space::with_height(spacing::XS),
-            bot_cards,
-            Space::with_height(spacing::SM),
-            row![new_game_btn, Space::with_width(spacing::SM), status_box].align_y(Alignment::Center),
-        ]
-        .spacing(spacing::XS);
-
-        if self.pending_promotion.is_some() {
-            let promo_btn = |role: Role, label: &'static str| {
-                button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                    .padding([spacing::XS, spacing::SM])
-                    .style(primary_button_style)
-                    .on_press(BotMessage::SelectPromotion(role))
-            };
-
-            let promo_box = container(
-                column![
-                    text("Promote Pawn To:")
-                        .font(fonts::UI_BOLD)
-                        .size(type_scale::BODY)
-                        .color(palette::TEXT_PRIMARY),
-                    row![
-                        promo_btn(Role::Queen, "Queen"),
-                        promo_btn(Role::Rook, "Rook"),
-                        promo_btn(Role::Bishop, "Bishop"),
-                        promo_btn(Role::Knight, "Knight"),
-                        button(text("Cancel").font(fonts::UI).size(type_scale::BODY))
-                            .padding([spacing::XS, spacing::SM])
-                            .style(secondary_button_style)
-                            .on_press(BotMessage::CancelPromotion),
+                let card = button(
+                    column![
+                        header,
+                        text(b.bio)
+                            .font(fonts::UI)
+                            .size(type_scale::CAPTION)
+                            .color(palette::TEXT_MUTED)
+                            .wrapping(text::Wrapping::WordOrGlyph)
+                            .width(Length::Fill),
                     ]
-                    .spacing(spacing::XS),
-                ]
-                .spacing(spacing::XS),
-            )
-            .padding(spacing::SM)
-            .width(Length::Fill)
-            .style(card_container_style);
+                    .spacing(spacing::XXS)
+                    .width(Length::Fill),
+                )
+                .padding(spacing::XS)
+                .width(Length::Fill)
+                .style(move |_theme, _status| {
+                    if is_selected {
+                        button::Style {
+                            background: Some(palette::BG_ELEVATED.into()),
+                            border: border::rounded(spacing::RADIUS)
+                                .color(palette::ACCENT)
+                                .width(2.0),
+                            ..Default::default()
+                        }
+                    } else {
+                        button::Style {
+                            background: Some(palette::BG_SURFACE.into()),
+                            border: border::rounded(spacing::RADIUS)
+                                .color(palette::BORDER_SUBTLE)
+                                .width(1.0),
+                            ..Default::default()
+                        }
+                    }
+                })
+                .on_press(BotMessage::SelectBot(i));
 
-            side_col = side_col.push(Space::with_height(spacing::XS)).push(promo_box);
-        }
+                bot_cards = bot_cards.push(card);
+            }
 
-        if self.engine_error.is_some() && !self.is_game_over && !self.is_player_turn() {
-            let retry_btn = button(
-                row![
-                    icon_widget(icon_refresh_cw(), 14.0, Some(palette::TEXT_PRIMARY)),
-                    text("Retry Engine")
-                        .font(fonts::UI_SEMIBOLD)
-                        .size(type_scale::BODY),
-                ]
-                .spacing(spacing::XS)
-                .align_y(Alignment::Center),
-            )
-            .padding([spacing::XS, spacing::SM])
-            .style(danger_button_style)
-            .on_press(BotMessage::RetryBotMove);
-
-            let fallback_btn = button(
-                text("Play Random Legal Move")
+            let bots_header = row![
+                text("Select Opponent")
                     .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::BODY),
-            )
-            .padding([spacing::XS, spacing::SM])
-            .style(secondary_button_style)
-            .on_press(BotMessage::PlayFallbackMove);
+                    .size(type_scale::HEADING)
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None),
+                Space::with_width(Length::Fill),
+                container(
+                    text(format!("{} Elo", bot.elo))
+                        .font(fonts::MONO_BOLD)
+                        .size(type_scale::CAPTION)
+                        .color(palette::ACCENT)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([2.0, 6.0])
+                .style(badge_container_style(palette::BG_SURFACE)),
+            ]
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
-            let recovery_box = container(
-                row![retry_btn, fallback_btn]
-                    .spacing(spacing::SM)
-                    .align_y(Alignment::Center),
-            )
-            .padding(spacing::SM)
-            .width(Length::Fill)
-            .style(card_container_style);
+            let bots_scroll_card = container(scrollable(bot_cards).height(Length::Fill))
+                .padding(spacing::XS)
+                .width(Length::Fill)
+                .height(Length::FillPortion(3))
+                .clip(true)
+                .style(card_container_style);
 
-            side_col = side_col.push(Space::with_height(spacing::XS)).push(recovery_box);
-        }
+            // 3. Live Move List
+            let moves_header = row![
+                text("Move History")
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::HEADING)
+                    .color(palette::TEXT_SECONDARY)
+                    .wrapping(text::Wrapping::None),
+                Space::with_width(Length::Fill),
+                container(
+                    text(format!("{} ply", self.move_history.len()))
+                        .font(fonts::MONO)
+                        .size(type_scale::CAPTION)
+                        .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([2.0, 6.0])
+                .style(badge_container_style(palette::BG_SURFACE)),
+            ]
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
-        let content = row![board_el, Space::with_width(spacing::LG), side_col,]
-            .padding(spacing::MD)
-            .width(Length::Fill)
-            .height(Length::Fill);
+            let mut move_rows = column![].spacing(spacing::XXS).width(Length::Fill);
+            if self.move_history.is_empty() {
+                move_rows = move_rows.push(
+                    text("No moves yet. Play a move on the board to begin.")
+                        .font(fonts::UI)
+                        .size(type_scale::CAPTION)
+                        .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill),
+                );
+            } else {
+                for (pair_idx, pair) in self.move_history.chunks(2).enumerate() {
+                    let move_num = pair_idx + 1;
+                    let w_san = &pair[0];
+                    let b_san = pair.get(1).map(|s| s.as_str()).unwrap_or("");
+                    let row_item = row![
+                        text(format!("{}.", move_num))
+                            .font(fonts::MONO)
+                            .size(type_scale::BODY)
+                            .color(palette::TEXT_MUTED)
+                            .wrapping(text::Wrapping::None)
+                            .width(Length::Fixed(34.0)),
+                        container(
+                            text(w_san)
+                                .font(fonts::MONO_BOLD)
+                                .size(type_scale::BODY)
+                                .color(palette::TEXT_PRIMARY)
+                                .wrapping(text::Wrapping::None)
+                        )
+                        .width(Length::FillPortion(1))
+                        .clip(true),
+                        container(
+                            text(b_san)
+                                .font(fonts::MONO_BOLD)
+                                .size(type_scale::BODY)
+                                .color(palette::TEXT_PRIMARY)
+                                .wrapping(text::Wrapping::None)
+                        )
+                        .width(Length::FillPortion(1))
+                        .clip(true),
+                    ]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill);
 
-        container(content).into()
+                    move_rows = move_rows.push(row_item);
+                }
+            }
+
+            let moves_scroll_card = container(scrollable(move_rows).height(Length::Fill))
+                .padding(spacing::SM)
+                .width(Length::Fill)
+                .height(Length::FillPortion(2))
+                .clip(true)
+                .style(card_container_style);
+
+            side_col = side_col
+                .push(bots_header)
+                .push(bots_scroll_card)
+                .push(moves_header)
+                .push(moves_scroll_card);
+
+            render_board_workspace(board_el, side_col.into(), metrics)
     }
 }
 
@@ -794,5 +1083,44 @@ mod tests {
                 assert_eq!(screen.game_status, "Draw by threefold repetition.");
             }
         }
+    }
+
+    #[test]
+    fn resign_ends_game_disables_board_and_sets_outcome() {
+        let mut screen = BotPlayScreen::new();
+        assert!(screen.board_widget.interactive);
+        assert!(screen.game_outcome.is_none());
+
+        screen.resign();
+        assert!(screen.is_game_over);
+        assert!(!screen.board_widget.interactive);
+        let outcome = screen.game_outcome.as_ref().unwrap();
+        assert_eq!(outcome.result, "0-1");
+        assert_eq!(outcome.reason, "You resigned");
+
+        // Subsequent board clicks are ignored
+        assert!(screen.handle_square_clicked(Square::E2).is_none());
+
+        // Reset restores board interactivity and clears outcome
+        screen.reset_game();
+        assert!(!screen.is_game_over);
+        assert!(screen.board_widget.interactive);
+        assert!(screen.game_outcome.is_none());
+        assert!(screen.move_history.is_empty());
+    }
+
+    #[test]
+    fn move_history_records_san_moves_and_clears_on_reset() {
+        let mut screen = BotPlayScreen::new();
+        let _ = screen.handle_square_clicked(Square::E2);
+        let _ = screen.handle_square_clicked(Square::E4);
+        assert_eq!(screen.move_history, vec!["e4".to_string()]);
+
+        let gen = screen.game_generation;
+        screen.apply_engine_result(gen, Ok("e7e5".to_string()));
+        assert_eq!(screen.move_history, vec!["e4".to_string(), "e5".to_string()]);
+
+        screen.reset_game();
+        assert!(screen.move_history.is_empty());
     }
 }

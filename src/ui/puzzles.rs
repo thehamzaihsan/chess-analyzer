@@ -1,12 +1,16 @@
 use crate::db::Puzzle;
 use crate::ui::board::{BoardMessage, BoardWidget};
-use crate::ui::game_layout::{render_unified_board_column, PlayerInfo};
-use crate::ui::theme::{
-    card_container_style, fonts, icon_check, icon_chevron_right, icon_eye, icon_refresh_cw,
-    icon_sparkles, icon_widget, icon_x, nav_button_style, palette, primary_button_style,
-    secondary_button_style, spacing, type_scale,
+use crate::ui::game_layout::{
+    compute_board_layout, render_board_workspace, render_result_banner_with_tone,
+    render_sized_board_column, GameOutcome, OutcomeTone, PlayerInfo, PlayerResult,
 };
-use iced::widget::{button, column, container, row, text, Space};
+use crate::ui::theme::{
+    badge_container_style, card_container_style, fonts, icon_check, icon_chevron_right, icon_eye,
+    icon_refresh_cw, icon_sparkles, icon_widget, icon_x, palette, primary_button_style,
+    secondary_button_style, segmented_button_style, segmented_container_style, spacing, truncate,
+    type_scale, with_tooltip,
+};
+use iced::widget::{button, column, container, row, text, tooltip, Space};
 use iced::{Alignment, Element, Length};
 use shakmaty::{CastlingMode, Chess, Color, Move, Position, Role, Square};
 
@@ -231,6 +235,7 @@ impl PuzzleScreen {
                 if self.current_move_step >= self.puzzle_moves.len() {
                     crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                     self.is_solved = true;
+                    self.board_widget.interactive = false;
                     self.puzzle_status = "Correct! Puzzle solved!".to_string();
                 } else {
                     if let Some(opp_uci) = self.puzzle_moves.get(self.current_move_step) {
@@ -255,6 +260,7 @@ impl PuzzleScreen {
                     if self.current_move_step >= self.puzzle_moves.len() {
                         crate::audio::play_sound(crate::audio::SoundType::GameEnd);
                         self.is_solved = true;
+                        self.board_widget.interactive = false;
                         self.puzzle_status = "Correct! Puzzle solved!".to_string();
                     } else {
                         self.puzzle_status = "Good move! Find the continuation.".to_string();
@@ -331,256 +337,484 @@ impl PuzzleScreen {
         self.puzzle_status = format!("Solution: {}", line);
     }
 
-    pub fn view<'a>(&'a self) -> Element<'a, PuzzleMessage> {
-        let is_white_turn = self.board_widget.position.turn() == Color::White;
-        let puzzle_rating = self.current_puzzle.as_ref().map(|p| p.rating);
-        let puzzle_source = self
-            .current_puzzle
-            .as_ref()
-            .map(|p| p.source.as_str())
-            .unwrap_or("Puzzle");
-
-        let user_is_white = self.user_is_white;
-        let opp_is_white = !user_is_white;
-
-        let user_active = !self.is_solved && (is_white_turn == user_is_white);
-        let opp_active = !self.is_solved && (is_white_turn == opp_is_white);
-
-        let opp_player = PlayerInfo::new(format!("Opponent ({})", puzzle_source), opp_is_white)
-            .with_rating(puzzle_rating)
-            .with_title("PUZZLE")
-            .with_active_turn(opp_active);
-
-        let user_status = if self.is_solved {
-            "Solved!"
-        } else if self.puzzle_status.starts_with("Incorrect") {
-            "Try again!"
+    pub fn solver_move_progress(&self) -> (usize, usize) {
+        let Some(ref p) = self.current_puzzle else {
+            return (0, 0);
+        };
+        let is_lichess = p.source == "lichess";
+        let setup_offset = if is_lichess && !self.puzzle_moves.is_empty() {
+            1
         } else {
-            "Your turn"
+            0
         };
+        let solver_total = self.puzzle_moves.len().saturating_sub(setup_offset).div_ceil(2);
+        if solver_total == 0 {
+            return (0, 0);
+        }
+        if self.is_solved {
+            return (solver_total, solver_total);
+        }
+        let played_since_setup = self.current_move_step.saturating_sub(setup_offset);
+        let current = ((played_since_setup / 2) + 1).min(solver_total);
+        (current, solver_total)
+    }
 
-        let user_player = PlayerInfo::new("You", user_is_white)
-            .with_status(user_status)
-            .with_active_turn(user_active);
+    pub fn view<'a>(&'a self, avail_size: iced::Size) -> Element<'a, PuzzleMessage> {
+        let is_white_turn = self.board_widget.position.turn() == Color::White;
+            let puzzle_rating = self.current_puzzle.as_ref().map(|p| p.rating);
+            let puzzle_source = self
+                .current_puzzle
+                .as_ref()
+                .map(|p| p.source.as_str())
+                .unwrap_or("Puzzle");
 
-        // board_widget.flipped is always !user_is_white, so user is always at the bottom.
-        let (top_player, bottom_player) = (&opp_player, &user_player);
+            let user_is_white = self.user_is_white;
+            let opp_is_white = !user_is_white;
 
-        let board_el = render_unified_board_column(
-            top_player,
-            bottom_player,
-            &self.board_widget.position,
-            &self.board_widget,
-            PuzzleMessage::Board,
-            None,
-        );
+            let user_active = !self.is_solved && (is_white_turn == user_is_white);
+            let opp_active = !self.is_solved && (is_white_turn == opp_is_white);
 
-        let title = text("Tactics & Puzzle Trainer")
-            .font(fonts::UI_BOLD)
-            .size(type_scale::TITLE)
-            .color(palette::TEXT_PRIMARY);
+            let (user_badge, opp_badge) = if self.is_solved {
+                (Some(PlayerResult::Win), Some(PlayerResult::Loss))
+            } else if self.revealed_solution.is_some() {
+                (Some(PlayerResult::Loss), Some(PlayerResult::Win))
+            } else {
+                (None, None)
+            };
 
-        let make_filter_btn = |filter_opt: Option<String>, label: &'static str| {
-            let is_sel = self.filter == filter_opt;
-            button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                .padding([spacing::XS, spacing::SM])
-                .style(nav_button_style(is_sel))
+            let opp_player = PlayerInfo::new(format!("Opponent ({})", puzzle_source), opp_is_white)
+                .with_rating(puzzle_rating)
+                .with_title("PUZZLE")
+                .with_active_turn(opp_active)
+                .with_result(opp_badge);
+
+            let user_status = if self.is_solved {
+                "Solved!"
+            } else if self.revealed_solution.is_some() {
+                "Solution revealed"
+            } else if self.puzzle_status.starts_with("Incorrect") {
+                "Try again!"
+            } else {
+                "Your turn"
+            };
+
+            let user_player = PlayerInfo::new("You", user_is_white)
+                .with_status(user_status)
+                .with_active_turn(user_active)
+                .with_result(user_badge);
+
+            // board_widget.flipped is always !user_is_white, so user is always at the bottom.
+            let (top_player, bottom_player) = (&opp_player, &user_player);
+
+            let metrics = compute_board_layout(avail_size, false);
+            let board_el = render_sized_board_column(
+                top_player,
+                bottom_player,
+                &self.board_widget.position,
+                &self.board_widget,
+                PuzzleMessage::Board,
+                None,
+                metrics.board_side,
+            );
+
+            // 1. Segmented Filter Control
+            let make_filter_btn = |filter_opt: Option<String>, label: &'static str| {
+                let is_sel = self.filter == filter_opt;
+                button(
+                    container(
+                        text(label)
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+                )
+                .width(Length::FillPortion(1))
+                .padding([spacing::XXS, spacing::XS])
+                .style(segmented_button_style(is_sel))
                 .on_press(PuzzleMessage::SelectFilter(filter_opt))
-        };
+            };
 
-        let filter_row = row![
-            text("Filter:")
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY)
-                .color(palette::TEXT_SECONDARY),
-            make_filter_btn(None, "All Puzzles"),
-            make_filter_btn(Some("blunder".to_string()), "My Blunders"),
-            make_filter_btn(Some("lichess".to_string()), "Lichess Puzzles"),
-        ]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
+            let filter_control = container(
+                row![
+                    make_filter_btn(None, "All"),
+                    make_filter_btn(Some("blunder".to_string()), "My Blunders"),
+                    make_filter_btn(Some("lichess".to_string()), "Lichess"),
+                ]
+                .spacing(4.0)
+                .width(Length::Fill),
+            )
+            .padding(4.0)
+            .width(Length::Fill)
+            .clip(true)
+            .style(segmented_container_style);
 
-        let next_btn_content = row![
-            text("Next Puzzle")
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY),
-            icon_widget(icon_chevron_right(), 14.0, Some(palette::TEXT_PRIMARY)),
-        ]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
+            // 2. Structured Puzzle Info Card
+            let info_card: Element<'a, PuzzleMessage> = if let Some(ref puzzle) = self.current_puzzle
+            {
+                let (cur_move, total_moves) = self.solver_move_progress();
+                let source_label = if puzzle.source == "lichess" {
+                    "Lichess"
+                } else {
+                    "My Blunder"
+                };
+                let to_move_label = if self.user_is_white {
+                    "White to move"
+                } else {
+                    "Black to move"
+                };
 
-        let next_btn = button(next_btn_content)
-            .padding([spacing::SM, spacing::MD])
+                let progress_badge = container(
+                    text(if total_moves > 0 {
+                        format!("Move {} of {}", cur_move, total_moves)
+                    } else {
+                        "Ready".to_string()
+                    })
+                    .font(fonts::MONO_BOLD)
+                    .size(type_scale::CAPTION)
+                    .color(palette::TEXT_PRIMARY)
+                    .wrapping(text::Wrapping::None),
+                )
+                .padding([2.0, 8.0])
+                .style(badge_container_style(palette::ACCENT_MUTED));
+
+                let rating_badge = container(
+                    text(format!("{} Elo", puzzle.rating))
+                        .font(fonts::MONO_BOLD)
+                        .size(type_scale::CAPTION)
+                        .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([2.0, 8.0])
+                .style(badge_container_style(palette::BG_SURFACE));
+
+                let source_badge = container(
+                    text(source_label)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::CAPTION)
+                        .color(palette::TEXT_SECONDARY)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([2.0, 8.0])
+                .style(badge_container_style(palette::BG_SURFACE));
+
+                let top_meta = row![
+                    text(to_move_label)
+                        .font(fonts::UI_BOLD)
+                        .size(type_scale::HEADING)
+                        .color(palette::TEXT_PRIMARY)
+                        .wrapping(text::Wrapping::None),
+                    Space::with_width(Length::Fill),
+                    progress_badge,
+                ]
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
+
+                let badges_row = row![rating_badge, source_badge]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill);
+
+                let mut info_col = column![top_meta, badges_row]
+                    .spacing(spacing::XS)
+                    .width(Length::Fill);
+
+                let themes_clean = puzzle.themes.trim();
+                if !themes_clean.is_empty() {
+                    let short_themes = truncate(themes_clean, 44);
+                    let themes_txt = text(format!("Themes: {}", short_themes))
+                        .font(fonts::UI)
+                        .size(type_scale::CAPTION)
+                        .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill);
+                    let themes_el: Element<'a, PuzzleMessage> = if short_themes != themes_clean {
+                        with_tooltip(themes_txt, themes_clean, tooltip::Position::Bottom)
+                    } else {
+                        themes_txt.into()
+                    };
+                    info_col = info_col.push(themes_el);
+                }
+
+                container(info_col)
+                    .padding(spacing::SM)
+                    .width(Length::Fill)
+                    .clip(true)
+                    .style(card_container_style)
+                    .into()
+            } else {
+                container(
+                    text("No puzzle loaded — click Next Puzzle or Mine Blunders.")
+                        .font(fonts::UI)
+                        .size(type_scale::BODY)
+                        .color(palette::TEXT_MUTED)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill),
+                )
+                .padding(spacing::SM)
+                .width(Length::Fill)
+                .clip(true)
+                .style(card_container_style)
+                .into()
+            };
+
+            // 3. Feedback / Outcome Banner
+            let (status_icon, status_color) = if self.is_solved {
+                (Some(icon_check()), palette::SUCCESS)
+            } else if self.puzzle_status.starts_with("Incorrect") {
+                (Some(icon_x()), palette::DANGER)
+            } else {
+                (None, palette::TEXT_SECONDARY)
+            };
+
+            let status_row = if let Some(icon) = status_icon {
+                row![
+                    icon_widget(icon, 15.0, Some(status_color)),
+                    Space::with_width(spacing::XS),
+                    text(&self.puzzle_status)
+                        .font(fonts::UI_SEMIBOLD)
+                        .size(type_scale::BODY)
+                        .color(status_color)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill),
+                ]
+                .align_y(Alignment::Center)
+                .width(Length::Fill)
+            } else {
+                row![text(&self.puzzle_status)
+                    .font(fonts::UI_SEMIBOLD)
+                    .size(type_scale::BODY)
+                    .color(status_color)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .width(Length::Fill)]
+                .align_y(Alignment::Center)
+                .width(Length::Fill)
+            };
+
+            let status_box = container(status_row)
+                .padding(spacing::SM)
+                .width(Length::Fill)
+                .clip(true)
+                .style(card_container_style);
+
+            let feedback_el: Element<'a, PuzzleMessage> = if self.is_solved {
+                let score = if user_is_white { "1-0" } else { "0-1" };
+                render_result_banner_with_tone(
+                    &GameOutcome::new(score, "Puzzle Solved!"),
+                    OutcomeTone::Win,
+                )
+            } else if self.revealed_solution.is_some() {
+                let score = if user_is_white { "0-1" } else { "1-0" };
+                render_result_banner_with_tone(
+                    &GameOutcome::new(score, "Puzzle Failed — Solution Revealed"),
+                    OutcomeTone::Loss,
+                )
+            } else if self.has_incorrect_attempt {
+                render_result_banner_with_tone(
+                    &GameOutcome::new("TRY", "Incorrect move — try again or use Hint"),
+                    OutcomeTone::Loss,
+                )
+            } else {
+                status_box.into()
+            };
+
+            // 4. Structured Action Bar
+            let next_btn = button(
+                container(
+                    row![
+                        text("Next Puzzle")
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                        icon_widget(icon_chevron_right(), 14.0, Some(palette::TEXT_PRIMARY)),
+                    ]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::FillPortion(1))
+            .padding([spacing::XS, spacing::SM])
             .style(primary_button_style)
             .on_press(PuzzleMessage::NextPuzzle);
 
-        let mine_content = row![
-            icon_widget(icon_sparkles(), 14.0, Some(palette::TEXT_PRIMARY)),
-            text("Mine Puzzles from Blunders")
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::BODY),
-        ]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
-
-        let mine_btn = button(mine_content)
-            .padding([spacing::SM, spacing::MD])
+            let mine_btn = button(
+                container(
+                    row![
+                        icon_widget(icon_sparkles(), 14.0, Some(palette::TEXT_PRIMARY)),
+                        text("Mine Blunders")
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::BODY)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(spacing::XS)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::FillPortion(1))
+            .padding([spacing::XS, spacing::SM])
             .style(secondary_button_style)
             .on_press(PuzzleMessage::MineBlunderPuzzles);
 
-        let action_row = row![next_btn, mine_btn].spacing(spacing::SM);
+            let primary_action_row = row![next_btn, mine_btn]
+                .spacing(spacing::XS)
+                .width(Length::Fill);
 
-        let (status_icon, status_color) = if self.is_solved {
-            (Some(icon_check()), palette::SUCCESS)
-        } else if self.puzzle_status.starts_with("Incorrect") {
-            (Some(icon_x()), palette::DANGER)
-        } else {
-            (None, palette::TEXT_SECONDARY)
-        };
-
-        let status_row = if let Some(icon) = status_icon {
-            row![
-                icon_widget(icon, 16.0, Some(status_color)),
-                Space::with_width(spacing::XS),
-                text(&self.puzzle_status)
-                    .font(fonts::UI_SEMIBOLD)
-                    .size(type_scale::HEADING)
-                    .color(status_color),
+            let mut side_col = column![
+                filter_control,
+                info_card,
+                feedback_el,
+                primary_action_row,
             ]
-            .align_y(Alignment::Center)
-        } else {
-            row![text(&self.puzzle_status)
-                .font(fonts::UI_SEMIBOLD)
-                .size(type_scale::HEADING)
-                .color(status_color)]
-            .align_y(Alignment::Center)
-        };
-
-        let status_box = container(status_row)
-            .padding(spacing::SM)
-            .style(card_container_style);
-
-        let mut side_col = column![
-            title,
-            Space::with_height(spacing::XS),
-            filter_row,
-            Space::with_height(spacing::SM),
-            action_row,
-            Space::with_height(spacing::SM),
-            status_box,
-        ]
-        .spacing(spacing::XS);
-
-        if self.current_puzzle.is_some() {
-            let hint_btn = button(
-                row![
-                    icon_widget(icon_sparkles(), 14.0, Some(palette::TEXT_PRIMARY)),
-                    text("Hint").font(fonts::UI_SEMIBOLD).size(type_scale::BODY),
-                ]
-                .spacing(spacing::XS)
-                .align_y(Alignment::Center),
-            )
-            .padding([spacing::XS, spacing::SM])
-            .style(secondary_button_style)
-            .on_press_maybe((!self.is_solved).then_some(PuzzleMessage::ShowHint));
-
-            let solution_btn = button(
-                row![
-                    icon_widget(icon_eye(), 14.0, Some(palette::TEXT_PRIMARY)),
-                    text("Show Solution")
-                        .font(fonts::UI_SEMIBOLD)
-                        .size(type_scale::BODY),
-                ]
-                .spacing(spacing::XS)
-                .align_y(Alignment::Center),
-            )
-            .padding([spacing::XS, spacing::SM])
-            .style(secondary_button_style)
-            .on_press_maybe((!self.is_solved).then_some(PuzzleMessage::ShowSolution));
-
-            let reset_btn = button(
-                row![
-                    icon_widget(icon_refresh_cw(), 14.0, Some(palette::TEXT_PRIMARY)),
-                    text("Reset Puzzle")
-                        .font(fonts::UI_SEMIBOLD)
-                        .size(type_scale::BODY),
-                ]
-                .spacing(spacing::XS)
-                .align_y(Alignment::Center),
-            )
-            .padding([spacing::XS, spacing::SM])
-            .style(secondary_button_style)
-            .on_press(PuzzleMessage::ResetPuzzle);
-
-            let helper_row = row![hint_btn, solution_btn, reset_btn]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center);
-
-            side_col = side_col.push(Space::with_height(spacing::XS)).push(helper_row);
-        }
-
-        if let Some(ref solution_line) = self.revealed_solution {
-            let sol_box = container(
-                column![
-                    text("Solution Line")
-                        .font(fonts::UI)
-                        .size(type_scale::CAPTION)
-                        .color(palette::TEXT_MUTED),
-                    text(solution_line)
-                        .font(fonts::MONO_BOLD)
-                        .size(type_scale::BODY)
-                        .color(palette::ACCENT),
-                ]
-                .spacing(spacing::XXS),
-            )
-            .padding(spacing::SM)
-            .width(Length::Fill)
-            .style(card_container_style);
-
-            side_col = side_col.push(Space::with_height(spacing::XS)).push(sol_box);
-        }
-
-        if self.pending_promotion.is_some() {
-            let promo_btn = |role: Role, label: &'static str| {
-                button(text(label).font(fonts::UI_SEMIBOLD).size(type_scale::BODY))
-                    .padding([spacing::XS, spacing::SM])
-                    .style(primary_button_style)
-                    .on_press(PuzzleMessage::SelectPromotion(role))
-            };
-
-            let promo_box = container(
-                column![
-                    text("Promote Pawn To:")
-                        .font(fonts::UI_BOLD)
-                        .size(type_scale::BODY)
-                        .color(palette::TEXT_PRIMARY),
-                    row![
-                        promo_btn(Role::Queen, "Queen"),
-                        promo_btn(Role::Rook, "Rook"),
-                        promo_btn(Role::Bishop, "Bishop"),
-                        promo_btn(Role::Knight, "Knight"),
-                        button(text("Cancel").font(fonts::UI).size(type_scale::BODY))
-                            .padding([spacing::XS, spacing::SM])
-                            .style(secondary_button_style)
-                            .on_press(PuzzleMessage::CancelPromotion),
-                    ]
-                    .spacing(spacing::XS),
-                ]
-                .spacing(spacing::XS),
-            )
-            .padding(spacing::SM)
-            .width(Length::Fill)
-            .style(card_container_style);
-
-            side_col = side_col.push(Space::with_height(spacing::XS)).push(promo_box);
-        }
-
-        let content = row![board_el, Space::with_width(spacing::LG), side_col,]
-            .padding(spacing::MD)
+            .spacing(spacing::SM)
             .width(Length::Fill)
             .height(Length::Fill);
 
-        container(content).into()
+            if self.current_puzzle.is_some() {
+                let hint_btn = button(
+                    container(
+                        row![
+                            icon_widget(icon_sparkles(), 13.0, Some(palette::TEXT_PRIMARY)),
+                            text("Hint")
+                                .font(fonts::UI_SEMIBOLD)
+                                .size(type_scale::CAPTION)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(spacing::XXS)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+                )
+                .width(Length::FillPortion(1))
+                .padding([spacing::XS, spacing::XS])
+                .style(secondary_button_style)
+                .on_press_maybe((!self.is_solved).then_some(PuzzleMessage::ShowHint));
+
+                let solution_btn = button(
+                    container(
+                        row![
+                            icon_widget(icon_eye(), 13.0, Some(palette::TEXT_PRIMARY)),
+                            text("Solution")
+                                .font(fonts::UI_SEMIBOLD)
+                                .size(type_scale::CAPTION)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(spacing::XXS)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+                )
+                .width(Length::FillPortion(1))
+                .padding([spacing::XS, spacing::XS])
+                .style(secondary_button_style)
+                .on_press_maybe((!self.is_solved).then_some(PuzzleMessage::ShowSolution));
+
+                let reset_btn = button(
+                    container(
+                        row![
+                            icon_widget(icon_refresh_cw(), 13.0, Some(palette::TEXT_PRIMARY)),
+                            text("Reset")
+                                .font(fonts::UI_SEMIBOLD)
+                                .size(type_scale::CAPTION)
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(spacing::XXS)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+                )
+                .width(Length::FillPortion(1))
+                .padding([spacing::XS, spacing::XS])
+                .style(secondary_button_style)
+                .on_press(PuzzleMessage::ResetPuzzle);
+
+                let helper_row = row![hint_btn, solution_btn, reset_btn]
+                    .spacing(spacing::XS)
+                    .width(Length::Fill);
+
+                side_col = side_col.push(helper_row);
+            }
+
+            if let Some(ref solution_line) = self.revealed_solution {
+                let sol_box = container(
+                    column![
+                        text("Solution Line")
+                            .font(fonts::UI)
+                            .size(type_scale::CAPTION)
+                            .color(palette::TEXT_MUTED),
+                        text(solution_line)
+                            .font(fonts::MONO_BOLD)
+                            .size(type_scale::BODY)
+                            .color(palette::ACCENT)
+                            .wrapping(text::Wrapping::WordOrGlyph)
+                            .width(Length::Fill),
+                    ]
+                    .spacing(spacing::XXS)
+                    .width(Length::Fill),
+                )
+                .padding(spacing::SM)
+                .width(Length::Fill)
+                .clip(true)
+                .style(card_container_style);
+
+                side_col = side_col.push(sol_box);
+            }
+
+            if self.pending_promotion.is_some() {
+                let promo_btn = |role: Role, label: &'static str| {
+                    button(
+                        text(label)
+                            .font(fonts::UI_SEMIBOLD)
+                            .size(type_scale::CAPTION)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding([spacing::XXS, spacing::XS])
+                    .style(primary_button_style)
+                    .on_press(PuzzleMessage::SelectPromotion(role))
+                };
+
+                let promo_box = container(
+                    column![
+                        text("Promote Pawn To:")
+                            .font(fonts::UI_BOLD)
+                            .size(type_scale::BODY)
+                            .color(palette::TEXT_PRIMARY),
+                        row![
+                            promo_btn(Role::Queen, "Queen"),
+                            promo_btn(Role::Rook, "Rook"),
+                            promo_btn(Role::Bishop, "Bishop"),
+                            promo_btn(Role::Knight, "Knight"),
+                            button(
+                                text("Cancel")
+                                    .font(fonts::UI)
+                                    .size(type_scale::CAPTION)
+                                    .wrapping(text::Wrapping::None)
+                            )
+                            .padding([spacing::XXS, spacing::XS])
+                            .style(secondary_button_style)
+                            .on_press(PuzzleMessage::CancelPromotion),
+                        ]
+                        .spacing(spacing::XXS),
+                    ]
+                    .spacing(spacing::XS)
+                    .width(Length::Fill),
+                )
+                .padding(spacing::SM)
+                .width(Length::Fill)
+                .clip(true)
+                .style(card_container_style);
+
+                side_col = side_col.push(promo_box);
+            }
+
+            render_board_workspace(board_el, side_col.into(), metrics)
     }
 }
 
@@ -612,6 +846,7 @@ mod tests {
 
         // Setup move e2e4 was auto-played -> solver is Black
         assert_eq!(screen.current_move_step, 1);
+        assert_eq!(screen.solver_move_progress(), (1, 2));
         assert!(!screen.user_is_white);
         assert!(screen.board_widget.flipped);
         assert_eq!(screen.board_widget.last_move, Some((Square::E2, Square::E4)));
@@ -623,6 +858,7 @@ mod tests {
 
         // Opponent reply g1f3 auto-played, now step = 3 (b8c6)
         assert_eq!(screen.current_move_step, 3);
+        assert_eq!(screen.solver_move_progress(), (2, 2));
         assert!(!screen.is_solved);
         assert_eq!(screen.board_widget.last_move, Some((Square::G1, Square::F3)));
 
@@ -630,6 +866,7 @@ mod tests {
         screen.handle_square_clicked(Square::B8);
         screen.handle_square_clicked(Square::C6);
         assert!(screen.is_solved);
+        assert_eq!(screen.solver_move_progress(), (2, 2));
     }
 
     #[test]
@@ -651,6 +888,7 @@ mod tests {
         assert!(screen.user_is_white);
         assert!(!screen.board_widget.flipped);
         assert_eq!(screen.current_move_step, 0);
+        assert_eq!(screen.solver_move_progress(), (1, 1));
 
         // Choose Queen (wrong promotion letter)
         screen.handle_square_clicked(Square::E7);
