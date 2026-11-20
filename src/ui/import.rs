@@ -106,7 +106,10 @@ fn format_player_cell<'a>(
     name: &'a str,
     elo: Option<i32>,
 ) -> Element<'a, ImportMessage> {
-    let display_name = truncate(name, 18);
+    // Keep name + rating on one line: the rating is a short fixed-width
+    // suffix, so give the name the remaining budget and never let the row
+    // squeeze the rating into a vertical character stack.
+    let display_name = truncate(name, 14);
     let full_label = match elo {
         Some(rating) if rating > 0 => format!("{} ({})", name, rating),
         _ => name.to_string(),
@@ -119,16 +122,21 @@ fn format_player_cell<'a>(
         .wrapping(text::Wrapping::None);
 
     let cell_content: Element<'a, ImportMessage> = match elo {
-        Some(rating) if rating > 0 => row![
-            name_widget,
-            text(format!("({})", rating))
-                .font(fonts::MONO)
-                .size(type_scale::CAPTION)
-                .color(palette::TEXT_MUTED)
-                .wrapping(text::Wrapping::None),
-        ]
-        .spacing(spacing::XXS)
-        .align_y(Alignment::Center)
+        Some(rating) if rating > 0 => container(
+            row![
+                name_widget,
+                text(format!("({})", rating))
+                    .font(fonts::MONO)
+                    .size(type_scale::CAPTION)
+                    .color(palette::TEXT_MUTED)
+                    .width(Length::Shrink)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(spacing::XXS)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .clip(true)
         .into(),
         _ => name_widget.into(),
     };
